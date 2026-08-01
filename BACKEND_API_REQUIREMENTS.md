@@ -1,0 +1,288 @@
+# Olympic Paycheck (mobile) — Backend API Requirements
+
+**For:** the Olympic Payroll backend team
+**From:** the Olympic Paycheck mobile rebuild
+**Status:** awaiting backend contract — this is the blocking dependency
+**Last updated:** 2026-08-01
+
+---
+
+## 1. What this document is
+
+The Olympic Paycheck iOS app is being rebuilt as a single React Native codebase
+for iOS and Android. **The app is feature-complete and running on device today**,
+but every figure in it is fixture data. It cannot show a real employee a real pay
+stub until it can talk to a real backend.
+
+The endpoint the legacy app used —
+`https://myolympicpay.com/WebServices/EmplPayrollInfo.asmx` — is decommissioned.
+Probed 2026-07-22: a `GET` returns the new Angular marketing site, and a `POST`
+returns IIS `405 — HTTP verb not allowed`. A live ASMX service would return a
+SOAP response or a SOAP fault, not a 405.
+
+The data clearly still exists: the newer **Olympic Employee Access** app serves it
+from a different backend. We need the contract for that backend.
+
+**This document is not a demand that you build a new API.** It is a precise
+statement of what the app consumes, so you can tell us which existing endpoints
+already provide it, which need a field added, and which don't exist yet. If your
+API's shape differs from what's below, that is fine — the app has a single
+adapter layer designed for exactly this, and we will map to whatever you have.
+What matters is that the *information* is reachable.
+
+---
+
+## 2. What we need from you
+
+In rough priority order:
+
+1. **Base URL(s)** for the API the Employee Access app uses — production, plus a
+   sandbox/staging environment if one exists.
+2. **API documentation** in any form: Swagger/OpenAPI, a Postman collection, a
+   WSDL, or even a working example request. Anything beats a guess.
+3. **The authentication scheme.** See §4 — this is the largest unknown and the
+   one most likely to change our design.
+4. **Two or three test accounts** against non-production data, covering:
+   - a single-employer employee,
+   - a multi-employer employee,
+   - an employee with a pay period containing more than one check.
+5. **Answers to the open questions in §7.**
+
+Items 1–3 unblock development. Item 4 unblocks verification — we cannot confirm
+the app renders real payroll correctly without real responses.
+
+---
+
+## 3. Operations the app needs
+
+Eleven operations. Each maps one-to-one onto a method the legacy SOAP service
+already exposed, which is our evidence that the payroll system holds this data —
+the column is there to help you locate the equivalent in the new system.
+
+| # | App operation | Legacy SOAP method | Purpose |
+|---|---|---|---|
+| 1 | `signIn` | `GetClientAccountsInformations` | Authenticate; return employee + their employers |
+| 2 | `getLatestPaycheck` | `GetLatestPayroll` | Most recent pay period |
+| 3 | `getPayYears` | `GetPayrollYears` | Years with payroll history |
+| 4 | `getPaychecks` | `GetPayrollHistory` | Pay periods within a year |
+| 5 | `getStub` | `GetEmployeePayrollDetails` | Full stub detail for one check |
+| 6 | `getChecksForDate` | `GetMultipleCheckList` | Individual checks when a period has several |
+| 7 | `getCombinedStub` | `GetEmpCombinedPayroll` | Several checks merged into one stub |
+| 8 | `markPaycheckRead` | `FlagReadPayrolls` | Clear the "new" flag |
+| 9 | `emailStub` | `SendEmail` | Email a stub to the address on record |
+| 10 | `getPhoto` | `GetEmployeePhoto` | Profile photo |
+| 11 | `uploadPhoto` | `InsertBase64Photo` | Replace profile photo |
+
+Operations 1–5 are **required for a usable app**. 6–7 are required for correctness
+for any employee who has ever received more than one check in a period. 8–11 are
+feature parity with the current app and can follow.
+
+---
+
+## 4. Authentication — the important part
+
+### How the legacy app worked
+
+Login was **email address + last 4 digits of SSN**, escalating to the **full
+9-digit SSN** after repeated failures. The app also sent a `deviceToken` and
+`deviceType`.
+
+### A security issue we will not reproduce
+
+The legacy client **downloaded the employee's real SSN and compared it on the
+device.** The new app does not do this and will not. SSN verification must happen
+**server-side**; the API must never return an SSN, in full or in part, in any
+response body.
+
+We would rather hear "that's already how the new backend works" than discover it
+isn't. Please confirm explicitly.
+
+### What we need to know
+
+- Is email + last-4-SSN still the authentication model on the new backend, or has
+  Employee Access moved to real passwords / OTP / SSO?
+- Is there a session token or bearer token, and what is its lifetime and refresh
+  behaviour? The legacy service was stateless per call.
+- Are `deviceToken` / `deviceType` still expected, and what are they used for?
+- Is there a lockout or throttling policy we should respect client-side? The app
+  currently escalates to full SSN after 2 failures and stops after 3 more.
+
+### Request: a per-device token, for biometric sign-in
+
+The app offers Face ID / fingerprint sign-in. Employee Access's own store listing
+states *"Social Security and Account numbers are not stored on your device"*, and
+we want to honour that same promise.
+
+Doing so cleanly needs **one small addition**: on successful login, return an
+opaque, revocable, per-device token, and accept that token in place of
+credentials on subsequent logins. The app would store only that token in the
+hardware-backed keychain/keystore, released after a biometric check.
+
+Without it, the only way to offer biometrics is to keep the SSN in the device
+keychain — encrypted, but still on the device, which contradicts the promise
+above. **We would prefer the token.** If it's feasible, roughly what would it
+take? If not, tell us and we'll ship the weaker option and flag the tradeoff.
+
+---
+
+## 5. Data the app consumes
+
+Shown as JSON for readability. Field *names* are ours and easily remapped; field
+*presence and meaning* is what we're asking about. `money` values are decimals in
+dollars.
+
+### Employee and employers (from `signIn`)
+
+An employee may be paid by more than one company, and **has a different employee
+id within each**. The app makes the employee choose an employer, then scopes every
+later call to that choice.
+
+```json
+{
+  "employee": { "id": "E-88214", "fullName": "MITCHELL, SARAH", "firstName": "Sarah" },
+  "companies": [
+    { "id": "CA-1041", "employeeId": "E-88214", "name": "Cascade Coffee Roasters", "latestPayrollId": "PR-90233" },
+    { "id": "CA-2277", "employeeId": "E-90551", "name": "Northgate Catering Co.",  "latestPayrollId": "PR-90240" }
+  ]
+}
+```
+
+- `companies[].id` — client account id; scopes stub lookups
+- `companies[].employeeId` — the employee's id **within that company**
+- `fullName` is accepted as payroll stores it (`"LAST, FIRST"`); the app formats it
+
+### Pay period summary (list rows)
+
+```json
+{
+  "id": "H-20260718-regular-E-88214",
+  "payDate": "Jul 18, 2026",
+  "payDateIso": "2026-07-18",
+  "net": 1643.20,
+  "method": "Direct deposit",
+  "isNew": true,
+  "checkCount": 1,
+  "isCombined": false,
+  "sentId": "S-20260718"
+}
+```
+
+- `id` — opaque to us; whatever you need to fetch the full stub
+- `payDateIso` — a sortable date, any unambiguous format
+- `isNew` — drives the unread badge; cleared by `markPaycheckRead`
+- `checkCount` / `isCombined` — see §6
+- `sentId` — required only for `markPaycheckRead` and `emailStub`
+
+### Full pay stub
+
+```json
+{
+  "id": "H-20260718-regular-E-88214",
+  "payDate": "Jul 18, 2026",
+  "gross": 2452.50,
+  "net": 1643.20,
+  "earnings":   [ { "label": "Regular", "detail": "80.00 hrs · $30.00/hr", "amount": 2400.00 },
+                  { "label": "Overtime", "detail": "1.17 hrs · $45.00/hr", "amount": 52.50 } ],
+  "taxes":      [ { "label": "Federal income", "amount": 299.69 },
+                  { "label": "Social Security", "amount": 152.06 },
+                  { "label": "Medicare", "amount": 35.56 },
+                  { "label": "State income", "amount": 118.95 } ],
+  "deductions": [ { "label": "Health insurance", "amount": 68.00 },
+                  { "label": "401(k) · 4%", "amount": 98.10 } ],
+  "taxTotal": 606.26,
+  "deductionTotal": 166.10,
+  "ytd": { "gross": 36787.50, "net": 24648.00, "taxes": 9093.90, "deductions": 2491.50 }
+}
+```
+
+Notes:
+
+- **Earnings, taxes and deductions are open lists.** The app renders whatever
+  labels you send and does not assume a fixed set — employees have different
+  benefits, garnishments and local taxes. Do not collapse them into fixed fields.
+- `detail` is optional per line (hours and rate, where applicable).
+- **The arithmetic must close.** `gross − taxTotal − deductionTotal` must equal
+  `net`, and each section's line items must sum to its total. Employees check
+  these by hand against the stub they're given, and a discrepancy of one cent
+  becomes a support call.
+- `ytd` is year-to-date **through and including this check**, across all of that
+  employee's checks in that year.
+
+---
+
+## 6. Pay periods with more than one check
+
+A period can hold several checks — a regular run plus a bonus, for example. The
+legacy service handled this with two separate methods and the app relies on that
+distinction:
+
+- **`getChecksForDate`** — list the individual checks on a pay date, so the
+  employee can open each stub separately.
+- **`getCombinedStub`** — the same checks merged into a single stub.
+
+The list row indicates which applies: `checkCount > 1` with `isCombined: false`
+opens the list; `isCombined: true` opens straight into the merged view.
+
+**Please confirm the new backend still distinguishes these.** If it only returns
+combined totals, employees who receive separate checks will not be able to see
+them individually, which is a functional regression against the current app.
+
+---
+
+## 7. Open questions
+
+1. What is the base URL, and is there a non-production environment?
+2. What authentication scheme does the new backend use? (§4)
+3. Will the API return an SSN in any response? (It must not — §4)
+4. Can you issue a per-device token for biometric sign-in? (§4)
+5. Does the new backend still expose individual vs. combined checks? (§6)
+6. Are earnings/taxes/deductions available as itemised lines, or only as totals?
+7. Are YTD figures available per check, or must the client accumulate them?
+8. Photos — still base64 in and out, or multipart upload and a URL back? Is there
+   a size limit?
+9. Does `SendEmail` still exist, and does it send to the payroll address on file?
+10. Any rate limits, IP allow-listing, or API keys we need provisioned?
+11. Can we get test credentials against non-production data? (§2, item 4)
+
+---
+
+## 8. Error handling
+
+The app distinguishes these cases and shows different copy for each. Any scheme
+works — HTTP status codes, an error field, a fault — as long as they're
+**distinguishable from one another**, because "something went wrong" is a poor
+message when the real problem is a typo in an email address.
+
+| Case | What the employee is told |
+|---|---|
+| Email not recognised | Check the email address and try again |
+| SSN doesn't match | Check the digits and try again |
+| Email shared by several employees | Call Olympic Payroll (with the count, if known) |
+| Record not found | We couldn't find that pay stub |
+| Network failure | Check your connection |
+| Server error | Generic apology — no internal detail shown |
+
+Underlying error text is never displayed to the employee, so please feel free to
+return whatever diagnostic detail is useful to us in logs.
+
+---
+
+## 9. What happens on our side once we have this
+
+The app is built against a single interface (`PayrollApi`, in
+`OlympicPaycheckExpo/src/api/client.ts`) that all 15 screens depend on. No screen
+knows anything about the transport. Wiring up a real backend is one new adapter
+file plus one changed line — the fixture backend is swapped out and the app is
+live on real data.
+
+The 176-test suite includes contract tests that run against whatever the adapter
+returns, so the same tests that pass on fixtures today become the acceptance
+tests for your API.
+
+Realistically: a few days from a documented contract to real payroll on screen,
+then verification against real accounts.
+
+---
+
+*Questions to the mobile side, or to walk through the app as it stands — it's
+installable on Android today.*
