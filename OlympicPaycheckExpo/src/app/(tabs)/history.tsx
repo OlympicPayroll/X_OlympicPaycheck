@@ -1,4 +1,3 @@
-import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
@@ -11,18 +10,38 @@ import { Card } from '@/components/ui';
 import { Radius, Spacing, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { usd } from '@/lib/format';
+import { openPaycheck } from '@/lib/routes';
 
 export default function HistoryScreen() {
   const theme = useTheme();
   const years = usePayYears();
   const [year, setYear] = useState<number>();
 
-  // Default to the most recent year once the list arrives.
+  const available = years.data;
+
+  /**
+   * Keep the selection inside the list that is actually on screen.
+   *
+   * Two cases, not one: the first load has no selection yet, and switching
+   * employer swaps the whole list underneath a selection that may not exist
+   * for the new one. Leaving a stale year selected showed "no paychecks in
+   * this year" with no chip highlighted, which reads as an error.
+   */
   useEffect(() => {
-    if (year === undefined && years.data?.length) setYear(years.data[0]);
-  }, [years.data, year]);
+    if (!available) return;
+    if (year !== undefined && available.includes(year)) return;
+    setYear(available[0]);
+  }, [available, year]);
 
   const paychecks = usePaychecks(year);
+
+  /**
+   * An employee with no payroll history at all leaves `year` undefined, which
+   * disables the paycheck query — and a disabled query is `pending` forever, so
+   * rendering the skeleton off `isPending` alone spun indefinitely. Settle the
+   * empty case here, before any loading state gets a chance to run.
+   */
+  const hasNoYears = years.isSuccess && !available?.length;
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.ground }}>
@@ -31,9 +50,18 @@ export default function HistoryScreen() {
       <ScrollView contentContainerStyle={styles.content}>
         <PageTitle title="Previous Paychecks" />
 
-        <View style={styles.chips}>
+        {/* Horizontal scroll rather than a fixed row: a long-tenured employee,
+            a narrow phone, or large accessibility text otherwise pushes the
+            oldest years off the edge with no way to reach them. */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.chipScroll}
+          contentContainerStyle={styles.chips}
+          keyboardShouldPersistTaps="handled"
+        >
           {years.isPending && [0, 1, 2, 3].map((i) => <Skeleton key={i} height={38} width={72} radius={Radius.pill} />)}
-          {years.data?.map((y) => {
+          {available?.map((y) => {
             const active = y === year;
             return (
               <Pressable
@@ -47,11 +75,20 @@ export default function HistoryScreen() {
               </Pressable>
             );
           })}
-        </View>
+        </ScrollView>
 
         {years.isError && <ErrorState error={years.error} onRetry={() => years.refetch()} />}
 
-        {!years.isError && (
+        {hasNoYears && (
+          <View style={styles.listWrap}>
+            <EmptyState
+              title="No payroll history yet"
+              message="Once you’ve been paid, your previous paychecks will appear here."
+            />
+          </View>
+        )}
+
+        {!years.isError && !hasNoYears && (
           <View style={styles.listWrap}>
             {paychecks.isPending && <ListSkeleton rows={6} />}
 
@@ -68,23 +105,9 @@ export default function HistoryScreen() {
                     <View key={p.id}>
                       {i > 0 && <View style={[styles.divider, { backgroundColor: theme.line }]} />}
                       <Pressable
-                        onPress={() => {
-                          // A period with several separate checks opens a list;
-                          // combined checks open straight into a merged stub.
-                          if (p.checkCount > 1 && !p.isCombined) {
-                            router.push({ pathname: '/checks', params: { date: p.payDateIso, label: p.payDate } });
-                          } else {
-                            router.push({
-                              pathname: '/stub',
-                              params: {
-                                id: p.id,
-                                date: p.payDateIso,
-                                combined: p.isCombined ? '1' : undefined,
-                                sentId: p.sentId,
-                              },
-                            });
-                          }
-                        }}
+                        // Branching and identifier handling are shared with the
+                        // Dashboard so the two entry points cannot drift.
+                        onPress={() => openPaycheck(p)}
                         accessibilityRole="button"
                         accessible
                         style={({ pressed }) => [styles.row, pressed && { backgroundColor: theme.rowFill }]}
@@ -122,6 +145,7 @@ export default function HistoryScreen() {
 const styles = StyleSheet.create({
   content: { paddingBottom: 140 },
   chips: { flexDirection: 'row', gap: Spacing.two, paddingHorizontal: Spacing.three, paddingVertical: 4 },
+  chipScroll: { flexGrow: 0 },
   chip: { paddingHorizontal: 18, paddingVertical: 9, borderRadius: Radius.pill },
   listWrap: { marginTop: Spacing.three, paddingHorizontal: Spacing.three },
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 15, paddingHorizontal: Spacing.three, gap: 10 },

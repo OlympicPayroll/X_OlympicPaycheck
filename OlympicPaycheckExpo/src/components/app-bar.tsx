@@ -90,7 +90,18 @@ export function PageTitle({ title, onBack, right }: { title: string; onBack?: ()
   );
 }
 
-export function TitleIconButton({ children, onPress, label }: { children: ReactNode; onPress?: () => void; label: string }) {
+export function TitleIconButton({
+  children,
+  onPress,
+  label,
+  disabled,
+}: {
+  children: ReactNode;
+  onPress?: () => void;
+  label: string;
+  /** Blocks repeat taps while the action it triggers is still in flight. */
+  disabled?: boolean;
+}) {
   const theme = useTheme();
   return (
     <Pressable
@@ -98,7 +109,14 @@ export function TitleIconButton({ children, onPress, label }: { children: ReactN
       hitSlop={8}
       accessibilityRole="button"
       accessibilityLabel={label}
-      style={({ pressed }) => [styles.iconBtn, { backgroundColor: theme.sketchTint }, pressed && { opacity: 0.7 }]}
+      accessibilityState={{ disabled: !!disabled }}
+      disabled={disabled}
+      style={({ pressed }) => [
+        styles.iconBtn,
+        { backgroundColor: theme.sketchTint },
+        pressed && { opacity: 0.7 },
+        disabled && { opacity: 0.5 },
+      ]}
     >
       {children}
     </Pressable>

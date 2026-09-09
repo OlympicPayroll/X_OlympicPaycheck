@@ -27,6 +27,14 @@ async function call<T>(pending: Promise<T>): Promise<T> {
 
 const total = (items: { amount: number }[]) => items.reduce((n, i) => n + i.amount, 0);
 
+/** A pay period holding more than one separate check, for the branching tests. */
+async function findMultiCheckPeriod() {
+  const paychecks = await call(api.getPaychecks({ employeeId: EMPLOYEE, year: 2025 }));
+  const period = paychecks.find((p) => p.checkCount > 1);
+  expect(period).toBeDefined();
+  return period!;
+}
+
 /** Every rule a pay stub must satisfy to be believable to the person paid. */
 function expectInternallyConsistent(stub: StubDetail) {
   expect(total(stub.earnings)).toBeCloseTo(stub.gross, 2);
@@ -298,5 +306,126 @@ describe('profile photo', () => {
     await call(api.uploadPhoto({ employeeId: 'E-PHOTO', base64: 'QUJD' }));
     const uri = await call(api.getPhoto({ employeeId: 'E-PHOTO' }));
     expect(uri).toBe('data:image/jpeg;base64,QUJD');
+  });
+});
+
+describe('marking a payroll read', () => {
+  /**
+   * The NEW badge is the one piece of payroll state the employee changes, and
+   * it has to survive a refetch. The fixture backend used to accept the call
+   * and record nothing, so "open the payroll, go back, badge still there" was
+   * indistinguishable from a broken cache invalidation in the app.
+   */
+  it('clears the unread flag on the dashboard', async () => {
+    const before = await call(api.getLatestPaycheck({ employeeId: EMPLOYEE }));
+    expect(before.isNew).toBe(true);
+
+    await call(api.markPaycheckRead({ sentId: before.sentId! }));
+
+    const after = await call(api.getLatestPaycheck({ employeeId: EMPLOYEE }));
+    expect(after.isNew).toBe(false);
+  });
+
+  it('clears it in the history list too', async () => {
+    const latest = await call(api.getLatestPaycheck({ employeeId: EMPLOYEE }));
+
+    await call(api.markPaycheckRead({ sentId: latest.sentId! }));
+
+    const rows = await call(api.getPaychecks({ employeeId: EMPLOYEE, year: 2026 }));
+    expect(rows.filter((p) => p.isNew)).toHaveLength(0);
+  });
+
+  it('stays cleared on a later refetch', async () => {
+    const latest = await call(api.getLatestPaycheck({ employeeId: EMPLOYEE }));
+    await call(api.markPaycheckRead({ sentId: latest.sentId! }));
+
+    await call(api.getPaychecks({ employeeId: EMPLOYEE, year: 2026 }));
+    const again = await call(api.getLatestPaycheck({ employeeId: EMPLOYEE }));
+
+    expect(again.isNew).toBe(false);
+  });
+
+  it('leaves other employees alone', async () => {
+    const mine = await call(api.getLatestPaycheck({ employeeId: EMPLOYEE }));
+    await call(api.markPaycheckRead({ sentId: mine.sentId! }));
+
+    const theirs = await call(api.getLatestPaycheck({ employeeId: 'E-31009' }));
+    expect(theirs.isNew).toBe(true);
+  });
+
+  /**
+   * Pay-period ids and delivery ids are different namespaces. A backend that
+   * accepts either lets a screen mix them up for months without anyone
+   * noticing, which is exactly what happened to the email action.
+   */
+  it('rejects a pay-period id where a delivery id belongs', async () => {
+    const latest = await call(api.getLatestPaycheck({ employeeId: EMPLOYEE }));
+
+    await expect(call(api.markPaycheckRead({ sentId: latest.id }))).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it('rejects the same substitution when emailing a stub', async () => {
+    const latest = await call(api.getLatestPaycheck({ employeeId: EMPLOYEE }));
+
+    await expect(call(api.emailStub({ sentId: latest.id }))).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it('accepts a genuine delivery id for email', async () => {
+    const latest = await call(api.getLatestPaycheck({ employeeId: EMPLOYEE }));
+
+    await expect(call(api.emailStub({ sentId: latest.sentId! }))).resolves.toBeUndefined();
+  });
+});
+
+describe('fixture arithmetic the employee can check by eye', () => {
+  /**
+   * A line item's printed inputs must multiply to its printed amount. The
+   * overtime line used to round the hours for display but bill the unrounded
+   * figure, so a stub could read "0.34 hrs · $45.00/hr … $15.12".
+   */
+  it('multiplies out every hours-times-rate line', async () => {
+    const years = await call(api.getPayYears({ employeeId: EMPLOYEE }));
+
+    for (const year of years) {
+      const paychecks = await call(api.getPaychecks({ employeeId: EMPLOYEE, year }));
+      for (const paycheck of paychecks) {
+        const stub = await call(api.getStub({ companyId: COMPANY, paycheckId: paycheck.id }));
+        for (const line of stub.earnings) {
+          const match = /^([\d.]+) hrs · \$([\d.]+)\/hr$/.exec(line.detail ?? '');
+          if (!match) continue;
+          const [, hours, rate] = match;
+          expect(Number(hours) * Number(rate)).toBeCloseTo(line.amount, 2);
+        }
+      }
+    }
+  });
+});
+
+describe('how the money arrived', () => {
+  it('reports direct deposit on a regular check', async () => {
+    const latest = await call(api.getLatestPaycheck({ employeeId: EMPLOYEE }));
+    const stub = await call(api.getStub({ companyId: COMPANY, paycheckId: latest.id }));
+
+    expect(stub.method).toBe('Direct deposit');
+  });
+
+  /** The stub screen labels its headline amount from this. */
+  it('reports a paper check on a bonus run', async () => {
+    const multi = await findMultiCheckPeriod();
+    const checks = await call(api.getChecksForDate({ employeeId: EMPLOYEE, payDateIso: multi.payDateIso }));
+    const bonus = checks.find((c) => c.method === 'Paper check');
+    expect(bonus).toBeTruthy();
+
+    const stub = await call(api.getStub({ companyId: COMPANY, paycheckId: bonus!.id }));
+    expect(stub.method).toBe('Paper check');
+  });
+
+  it('declines to name one method for a period that mixes them', async () => {
+    const multi = await findMultiCheckPeriod();
+    const combined = await call(
+      api.getCombinedStub({ employeeId: EMPLOYEE, payDateIso: multi.payDateIso }),
+    );
+
+    expect(combined.method).toBeUndefined();
   });
 });

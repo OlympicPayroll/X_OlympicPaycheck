@@ -72,6 +72,14 @@ export type YtdTotals = {
 export type StubDetail = {
   id: string;
   payDate: string;
+  /**
+   * How the money was delivered, e.g. "Direct deposit" or "Paper check".
+   *
+   * The stub screen needs this to label the headline amount honestly — a bonus
+   * paid by paper check is not a deposit. Optional because a combined view
+   * spanning several delivery methods has no single answer.
+   */
+  method?: string;
   net: number;
   gross: number;
   earnings: LineItem[];

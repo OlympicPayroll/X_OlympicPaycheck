@@ -28,7 +28,7 @@ const PRIVACY: Section[] = [
   },
   {
     heading: 'What is stored on your device',
-    body: 'Your Social Security number is not stored on your device. If you choose to remember your email address, only the email is saved. If you turn on Face ID, Touch ID or fingerprint sign-in, your sign-in details are held in your device’s encrypted keychain and released only after a successful biometric check. You can erase them at any time from Profile, or by signing out.',
+    body: 'Your full Social Security number is never stored on your device. If you choose to remember your email address, only the email is saved. If you turn on Face ID, Touch ID or fingerprint sign-in, your email address and the last four digits of your Social Security number are held in your device’s encrypted keychain, locked so that your device releases them only after a successful biometric check. Your name is stored alongside them, unlocked, so we can greet you on the sign-in screen. You can erase all of it at any time from Profile, or by signing out.',
   },
   {
     heading: 'Sharing',

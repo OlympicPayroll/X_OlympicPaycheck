@@ -96,8 +96,20 @@ export default function ProfileScreen() {
       destructive: true,
     });
     if (!ok) return;
-    await clearCredential();
+
+    const erased = await clearCredential();
     setBiometricOn(false);
+    // The switch has already moved, so say plainly if the keychain kept a copy
+    // rather than letting the UI imply an erase that didn't happen.
+    if (!erased) {
+      await confirm({
+        title: 'Saved sign-in may remain',
+        message:
+          'Your phone reported a problem erasing the saved sign-in. Sign out and back in, or remove the app, to be certain it is gone.',
+        confirmText: 'OK',
+        cancelText: 'Close',
+      });
+    }
   };
 
   const onSignOut = async () => {

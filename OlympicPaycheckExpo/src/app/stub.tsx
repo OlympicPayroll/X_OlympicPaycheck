@@ -4,7 +4,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import { useCombinedStub, useEmailStub, useMarkPaycheckRead, useStub } from '@/api/queries';
-import type { LineItem } from '@/api/types';
+import { messageFor, type LineItem } from '@/api/types';
 import { FamilyHeader, PageTitle, TitleIconButton } from '@/components/app-bar';
 import { Mail } from '@/components/icons';
 import { CardSkeleton, ErrorState, ListSkeleton } from '@/components/states';
@@ -13,11 +13,12 @@ import { Radius, Spacing, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useDialog } from '@/lib/dialog';
 import { usd } from '@/lib/format';
+import type { StubParams } from '@/lib/routes';
 
 export default function StubScreen() {
   const theme = useTheme();
   const { confirm } = useDialog();
-  const params = useLocalSearchParams<{ id?: string; date?: string; combined?: string; sentId?: string }>();
+  const params = useLocalSearchParams<StubParams>();
   const [tab, setTab] = useState<'check' | 'ytd'>('check');
 
   const isCombined = params.combined === '1';
@@ -29,27 +30,73 @@ export default function StubScreen() {
   const markRead = useMarkPaycheckRead();
   const emailStub = useEmailStub();
 
-  // Opening an unread payroll clears its NEW badge, matching the legacy app.
+  /**
+   * The delivery id.
+   *
+   * Deliberately not `params.sentId ?? params.id`: a pay-period id and a
+   * delivery id are different namespaces in the payroll API, and substituting
+   * one for the other only "worked" because both happen to be strings. A
+   * payroll with no delivery has no delivery to mark read or re-send, and the
+   * UI needs to say so rather than send the server a plausible wrong id.
+   */
   const sentId = params.sentId;
+
+  // Opening an unread payroll clears its NEW badge, matching the legacy app.
   useEffect(() => {
     if (sentId && stub) markRead.mutate({ sentId });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sentId, stub?.id]);
 
+  const canEmail = !!sentId && !!stub;
+
+  /**
+   * Send, and report either outcome.
+   *
+   * Recursive on retry so a second attempt behaves exactly like the first —
+   * confirming on success, offering another go on failure. Passing the
+   * callbacks to `mutate` only covers that one call, so a retry issued
+   * without them would succeed in complete silence.
+   */
+  const send = (deliveryId: string) => {
+    emailStub.mutate(
+      { sentId: deliveryId },
+      {
+        onSuccess: () => confirm({ title: 'Pay stub sent', confirmText: 'Done', cancelText: 'Close' }),
+        // A rejected send used to close the sheet and say nothing at all, so
+        // the employee had no way to tell it hadn't gone.
+        onError: async (error) => {
+          const retry = await confirm({
+            title: 'We couldn’t send it',
+            message: messageFor(error),
+            confirmText: 'Try Again',
+            cancelText: 'Close',
+          });
+          if (retry) send(deliveryId);
+        },
+      },
+    );
+  };
+
   const onEmail = async () => {
+    // Repeat taps must not queue up duplicate emails to the employee.
+    if (!sentId || emailStub.isPending) return;
+
     const ok = await confirm({
       title: 'Email this pay stub?',
       message: 'We’ll send a copy to the email address on your payroll record.',
       confirmText: 'Send',
     });
     if (!ok) return;
-    emailStub.mutate(
-      { sentId: sentId ?? params.id! },
-      {
-        onSuccess: () => confirm({ title: 'Pay stub sent', confirmText: 'Done', cancelText: 'Close' }),
-      },
-    );
+
+    send(sentId);
   };
+
+  /**
+   * Only claim a deposit when the money was actually deposited. Bonus runs are
+   * often paper checks, and "NET PAY DEPOSITED" on one is simply untrue.
+   */
+  const method = stub?.method ?? params.method;
+  const netLabel = method && /deposit/i.test(method) ? 'NET PAY DEPOSITED' : 'NET PAY';
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.ground }}>
@@ -60,9 +107,17 @@ export default function StubScreen() {
           title="Pay Stub"
           onBack={() => router.back()}
           right={
-            <TitleIconButton label="Email a copy" onPress={onEmail}>
-              <Mail color={theme.brand} size={18} />
-            </TitleIconButton>
+            // Hidden until there is a delivery to re-send and a stub to send:
+            // offering the action and then failing is worse than not offering.
+            canEmail ? (
+              <TitleIconButton
+                label="Email a copy"
+                onPress={onEmail}
+                disabled={emailStub.isPending}
+              >
+                <Mail color={emailStub.isPending ? theme.faint : theme.brand} size={18} />
+              </TitleIconButton>
+            ) : undefined
           }
         />
 
@@ -86,7 +141,7 @@ export default function StubScreen() {
                     {usd(tab === 'check' ? stub.net : stub.ytd.net)}
                   </Text>
                   <Text style={[Type.overline, { color: theme.faint, marginTop: 5 }]}>
-                    {tab === 'check' ? 'NET PAY DEPOSITED' : 'NET PAY THIS YEAR'}
+                    {tab === 'check' ? netLabel : 'NET PAY THIS YEAR'}
                   </Text>
                 </Card>
               </Animated.View>

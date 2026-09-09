@@ -38,7 +38,12 @@
           "imageWidth": 110
         }
       ],
-      "expo-secure-store",
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": "Allow Olympic Paycheck to use Face ID to unlock the sign-in saved on this device."
+        }
+      ],
       [
         "expo-local-authentication",
         {

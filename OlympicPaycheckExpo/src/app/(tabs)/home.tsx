@@ -11,6 +11,7 @@ import { Card } from '@/components/ui';
 import { Radius, Spacing, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { usd } from '@/lib/format';
+import { openPaycheck } from '@/lib/routes';
 
 export default function HomeScreen() {
   const theme = useTheme();
@@ -32,12 +33,9 @@ export default function HomeScreen() {
 
           {latest.data && (
             <Pressable
-              onPress={() =>
-                router.push({
-                  pathname: '/stub',
-                  params: { id: latest.data.id, date: latest.data.payDateIso, sentId: latest.data.sentId },
-                })
-              }
+              // Shared with History: a latest period holding several separate
+              // checks must open the check list, not an arbitrary one of them.
+              onPress={() => openPaycheck(latest.data)}
               accessibilityRole="button"
               // Read as one item — "Latest paycheck, new, pay date …, $1,755.02"
               // — instead of five unconnected fragments.
@@ -54,6 +52,9 @@ export default function HomeScreen() {
                 </View>
                 <Text style={[Type.caption, { color: theme.textSecondary, marginTop: 4 }]}>
                   Pay date · {latest.data.payDate}
+                  {latest.data.checkCount > 1
+                    ? ` · ${latest.data.checkCount} ${latest.data.isCombined ? 'combined' : 'checks'}`
+                    : ''}
                 </Text>
                 <View style={[styles.rowBetween, { marginTop: Spacing.three, alignItems: 'flex-end' }]}>
                   <View>

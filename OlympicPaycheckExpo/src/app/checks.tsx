@@ -10,6 +10,7 @@ import { Card } from '@/components/ui';
 import { Spacing, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { usd } from '@/lib/format';
+import { openCheck } from '@/lib/routes';
 
 /**
  * A pay period can contain more than one check (e.g. a regular check plus a
@@ -17,7 +18,10 @@ import { usd } from '@/lib/format';
  */
 export default function ChecksScreen() {
   const theme = useTheme();
-  const { date, label } = useLocalSearchParams<{ date?: string; label?: string }>();
+  // `sentId` addresses the period's delivery, not any one check. It rides
+  // along so opening a check can still mark that delivery read — dropping it
+  // here is what previously left the NEW badge stuck on multi-check periods.
+  const { date, label, sentId } = useLocalSearchParams<{ date?: string; label?: string; sentId?: string }>();
   const checks = useChecksForDate(date);
 
   return (
@@ -49,7 +53,7 @@ export default function ChecksScreen() {
                   <View key={c.id}>
                     {i > 0 && <View style={[styles.divider, { backgroundColor: theme.line }]} />}
                     <Pressable
-                      onPress={() => router.push({ pathname: '/stub', params: { id: c.id } })}
+                      onPress={() => openCheck(c, sentId)}
                       accessibilityRole="button"
                       accessible
                       style={({ pressed }) => [styles.row, pressed && { backgroundColor: theme.rowFill }]}

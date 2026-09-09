@@ -48,6 +48,11 @@ function money(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/** Two-decimal rounding for non-monetary quantities, e.g. hours worked. */
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 function sum(items: LineItem[]): number {
   return money(items.reduce((total, item) => total + item.amount, 0));
 }
@@ -128,6 +133,11 @@ function periodAt(employeeId: string, iso: string): Period | undefined {
 /* Check ids                                                                  */
 /* -------------------------------------------------------------------------- */
 
+/** How a check's money reached the employee. Bonus runs are cut on paper. */
+function methodFor(kind: CheckKind): string {
+  return kind === 'bonus' ? 'Paper check' : 'Direct deposit';
+}
+
 /** e.g. "H-20260718-regular-E-88214". Screens treat these as opaque. */
 function checkId(employeeId: string, iso: string, kind: CheckKind): string {
   return `H-${iso.replace(/-/g, '')}-${kind}-${employeeId}`;
@@ -174,13 +184,20 @@ function figuresFor(employeeId: string, iso: string, kind: CheckKind): Figures {
             amount: money(REGULAR_HOURS * HOURLY_RATE),
           },
           ...(r > 0
-            ? [
-                {
-                  label: 'Overtime',
-                  detail: `${(r * 6).toFixed(2)} hrs · $${(HOURLY_RATE * 1.5).toFixed(2)}/hr`,
-                  amount: money(r * 6 * HOURLY_RATE * 1.5),
-                },
-              ]
+            ? (() => {
+                // Round the hours FIRST, then pay for the hours we printed.
+                // Deriving the amount from the unrounded value made the stub
+                // fail its own arithmetic: "0.34 hrs · $45.00/hr … $15.12".
+                const hours = round2(r * 6);
+                const rate = HOURLY_RATE * 1.5;
+                return [
+                  {
+                    label: 'Overtime',
+                    detail: `${hours.toFixed(2)} hrs · $${rate.toFixed(2)}/hr`,
+                    amount: money(hours * rate),
+                  },
+                ];
+              })()
             : []),
         ];
 
@@ -245,6 +262,7 @@ function buildStub(employeeId: string, iso: string, kind: CheckKind): StubDetail
   return {
     id: checkId(employeeId, iso, kind),
     payDate: fmt(iso),
+    method: methodFor(kind),
     net: f.net,
     gross: f.gross,
     earnings: f.earnings,
@@ -278,9 +296,13 @@ function buildCombinedStub(employeeId: string, period: Period): StubDetail {
   const taxTotal = sum(taxes);
   const deductionTotal = sum(deductions);
 
+  const methods = [...new Set(period.kinds.map(methodFor))];
+
   return {
     id: `${checkId(employeeId, period.iso, 'regular')}-combined`,
     payDate: fmt(period.iso),
+    // Only claim a single delivery method when the merged checks agree on one.
+    method: methods.length === 1 ? methods[0] : undefined,
     net: money(gross - taxTotal - deductionTotal),
     gross,
     earnings,
@@ -292,25 +314,74 @@ function buildCombinedStub(employeeId: string, period: Period): StubDetail {
   };
 }
 
+/**
+ * Delivery id for a period, or undefined when nothing was delivered.
+ *
+ * Only the most recent payroll has one in these fixtures, mirroring the
+ * legacy service: `sentId` identifies an email delivery, and older runs were
+ * cleared long ago.
+ */
+function sentIdFor(employeeId: string, period: Period): string | undefined {
+  // Scoped to the employee: a delivery is one payroll sent to one person, so
+  // two colleagues paid on the same date must not share an id — marking one
+  // read would clear the other's badge too.
+  return period.index === 0 ? `S-${period.iso.replace(/-/g, '')}-${employeeId}` : undefined;
+}
+
+/**
+ * Deliveries the employee has opened.
+ *
+ * Module-level, so it behaves like server state: `markPaycheckRead` used to
+ * just wait and resolve, which meant "open the payroll, come back, badge is
+ * still there" was indistinguishable from a broken invalidation. Keyed by
+ * delivery id — the same thing the real API marks.
+ */
+const readDeliveries = new Set<string>();
+
 /** The list-row summary for a whole pay period (all its checks together). */
 function summarise(employeeId: string, period: Period): Paycheck {
   const net = money(
     period.kinds.reduce((total, kind) => total + figuresFor(employeeId, period.iso, kind).net, 0),
   );
+  const sentId = sentIdFor(employeeId, period);
+  const methods = [...new Set(period.kinds.map(methodFor))];
+
   return {
     id: checkId(employeeId, period.iso, period.kinds[0]),
     payDate: fmt(period.iso),
     payDateIso: period.iso,
     net,
-    method: 'Direct deposit',
-    isNew: period.index === 0,
+    method: methods.length === 1 ? methods[0] : 'Multiple methods',
+    isNew: period.index === 0 && !!sentId && !readDeliveries.has(sentId),
     checkCount: period.kinds.length,
     isCombined: period.combined,
-    sentId: period.index === 0 ? `S-${period.iso.replace(/-/g, '')}` : undefined,
+    sentId,
   };
 }
 
+/** Delivery ids look like "S-20260718-E-88214", and nothing else does. */
+const DELIVERY_ID = /^S-\d{8}-.+$/;
+
+function assertDeliveryId(sentId: string): void {
+  if (!DELIVERY_ID.test(sentId)) {
+    throw new ApiError('NOT_FOUND', `Not a delivery id: ${sentId}`);
+  }
+}
+
 const photos = new Map<string, string>();
+
+/**
+ * Reset every piece of fixture state that behaves like a server.
+ *
+ * Read receipts and uploaded photos outlive a single screen on purpose, which
+ * means they also outlive a single test. Tests call this so one does not
+ * inherit another one's payroll as already-read.
+ */
+export function resetFixtures(): void {
+  readDeliveries.clear();
+  photos.clear();
+  periodCache.clear();
+}
 
 export const mockApi = {
   async signIn({ email, ssnLast4, ssnFull }: { email: string; ssnLast4?: string; ssnFull?: string }): Promise<Session> {
@@ -375,7 +446,7 @@ export const mockApi = {
         payDate: fmt(payDateIso),
         payDateIso,
         net: f.net,
-        method: kind === 'bonus' ? 'Paper check' : 'Direct deposit',
+        method: methodFor(kind),
         isNew: false,
         checkCount: 1,
         isCombined: false,
@@ -390,12 +461,18 @@ export const mockApi = {
     return buildCombinedStub(employeeId, period);
   },
 
-  async markPaycheckRead(): Promise<void> {
+  async markPaycheckRead({ sentId }: { sentId: string }): Promise<void> {
     await delay(150);
+    // Validate rather than accept anything string-shaped: a screen that passes
+    // a pay-period id where a delivery id belongs should fail here, in a test,
+    // not silently against the real payroll service.
+    assertDeliveryId(sentId);
+    readDeliveries.add(sentId);
   },
 
-  async emailStub(): Promise<void> {
+  async emailStub({ sentId }: { sentId: string }): Promise<void> {
     await latency();
+    assertDeliveryId(sentId);
   },
 
   async getPhoto({ employeeId }: { employeeId: string }): Promise<string | null> {

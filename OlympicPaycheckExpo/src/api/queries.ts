@@ -12,6 +12,8 @@ export const queryKeys = {
   latestPaycheck: (employeeId: string) => ['latestPaycheck', employeeId] as const,
   payYears: (employeeId: string) => ['payYears', employeeId] as const,
   paychecks: (employeeId: string, year: number) => ['paychecks', employeeId, year] as const,
+  /** Prefix covering every cached year for one employee. */
+  paychecksForEmployee: (employeeId: string) => ['paychecks', employeeId] as const,
   stub: (companyId: string, paycheckId: string) => ['stub', companyId, paycheckId] as const,
   checksForDate: (employeeId: string, payDateIso: string) => ['checksForDate', employeeId, payDateIso] as const,
   combinedStub: (employeeId: string, payDateIso: string) => ['combinedStub', employeeId, payDateIso] as const,
@@ -90,14 +92,20 @@ export function useCombinedStub(payDateIso: string | undefined) {
   });
 }
 
-/** Clears the NEW badge, then refreshes the latest-paycheck card. */
+/** Clears the NEW badge, then refreshes every view that renders one. */
 export function useMarkPaycheckRead() {
   const employeeId = useEmployeeId();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (params: { sentId: string }) => getApi().markPaycheckRead(params),
     onSuccess: () => {
-      if (employeeId) qc.invalidateQueries({ queryKey: queryKeys.latestPaycheck(employeeId) });
+      if (!employeeId) return;
+      // History shows the same NEW badge as the Dashboard, so invalidating
+      // only the dashboard query left the badge up on the other screen. The
+      // year isn't known here, hence the prefix match across every cached
+      // year for this employee.
+      qc.invalidateQueries({ queryKey: queryKeys.latestPaycheck(employeeId) });
+      qc.invalidateQueries({ queryKey: queryKeys.paychecksForEmployee(employeeId) });
     },
   });
 }

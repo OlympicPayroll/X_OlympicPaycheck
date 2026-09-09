@@ -169,9 +169,31 @@ later call to that choice.
 
 - `id` — opaque to us; whatever you need to fetch the full stub
 - `payDateIso` — a sortable date, any unambiguous format
+- `method` — how the money arrived, e.g. `"Direct deposit"` or `"Paper check"`.
+  The app labels the headline amount from this and will not claim a paper check
+  was deposited. If a period mixes methods, send whatever reads correctly to an
+  employee; the app treats anything without the word "deposit" as not a deposit.
 - `isNew` — drives the unread badge; cleared by `markPaycheckRead`
 - `checkCount` / `isCombined` — see §6
-- `sentId` — required only for `markPaycheckRead` and `emailStub`
+- `sentId` — the **delivery** id, required only for `markPaycheckRead` and
+  `emailStub`. See the note below.
+
+#### `id` and `sentId` are different things
+
+`id` addresses a pay period or an individual check. `sentId` addresses a
+*delivery* — one payroll sent to one employee. The app keeps them strictly
+separate and will never substitute one for the other:
+
+- A payroll with no delivery arrives with **no** `sentId`, and the app hides
+  the "email a copy" action rather than guessing an identifier.
+- Please make the API **reject** an `id` passed where a `sentId` belongs
+  rather than accepting it. Silently accepting either is how a client ends up
+  marking the wrong record read for months without anyone noticing.
+- `sentId` must be scoped to the employee. Two people paid on the same date
+  must not share one, or marking one payroll read clears the other's badge.
+
+If historical payrolls need a *different* identifier to be re-emailed, say so
+and we will extend the contract — we will not reuse the history id for it.
 
 ### Full pay stub
 
@@ -179,6 +201,7 @@ later call to that choice.
 {
   "id": "H-20260718-regular-E-88214",
   "payDate": "Jul 18, 2026",
+  "method": "Direct deposit",
   "gross": 2452.50,
   "net": 1643.20,
   "earnings":   [ { "label": "Regular", "detail": "80.00 hrs · $30.00/hr", "amount": 2400.00 },
@@ -200,7 +223,12 @@ Notes:
 - **Earnings, taxes and deductions are open lists.** The app renders whatever
   labels you send and does not assume a fixed set — employees have different
   benefits, garnishments and local taxes. Do not collapse them into fixed fields.
-- `detail` is optional per line (hours and rate, where applicable).
+- `detail` is optional per line (hours and rate, where applicable). **Where it
+  states hours and a rate, those must multiply to the line amount as printed.**
+  An employee reading "0.34 hrs · $45.00/hr" next to "$15.12" will call to ask
+  why, and they will be right to.
+- `method` is optional here; send it where a single delivery method applies, and
+  omit it for a combined view spanning several.
 - **The arithmetic must close.** `gross − taxTotal − deductionTotal` must equal
   `net`, and each section's line items must sum to its total. Employees check
   these by hand against the stub they're given, and a discrepancy of one cent
@@ -243,6 +271,9 @@ them individually, which is a functional regression against the current app.
 9. Does `SendEmail` still exist, and does it send to the payroll address on file?
 10. Any rate limits, IP allow-listing, or API keys we need provisioned?
 11. Can we get test credentials against non-production data? (§2, item 4)
+12. Will `sentId` be rejected when a pay-period id is sent in its place, and is
+    it scoped per employee? (§5)
+13. Is `method` (direct deposit vs. paper check) available per check?
 
 ---
 
@@ -267,7 +298,25 @@ return whatever diagnostic detail is useful to us in logs.
 
 ---
 
-## 9. What happens on our side once we have this
+## 9. How the app selects a backend
+
+The app picks its backend from configuration, not from an edited source file:
+
+- `EXPO_PUBLIC_API_URL` (or `extra.apiUrl` in `app.json`) names the real
+  payroll service. When it is absent the app runs on fixtures and shows a demo
+  banner.
+- The `production` EAS profile has an empty `EXPO_PUBLIC_API_URL` waiting to be
+  filled in. Until it is, a production build **throws at startup** rather than
+  shipping invented payroll to employees.
+- The `preview` profile sets `EXPO_PUBLIC_ALLOW_FIXTURES=1`, so internal demo
+  builds keep working on fixtures while this contract is being agreed.
+
+So the single thing needed to switch the app onto the real service is the URL,
+plus the `httpApi` adapter implementing the interface in `src/api/client.ts`.
+
+---
+
+## 10. What happens on our side once we have this
 
 The app is built against a single interface (`PayrollApi`, in
 `OlympicPaycheckExpo/src/api/client.ts`) that all 15 screens depend on. No screen

@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
@@ -65,6 +65,17 @@ export default function LoginScreen() {
   const { confirm } = useDialog();
   const hello = useMemo(() => greeting(), []);
 
+  /**
+   * Set when the employee chose "Use email instead" on the unlock screen.
+   *
+   * Without it this screen sends every enrolled device straight back to
+   * `/unlock`, which re-fires the biometric prompt — so the advertised fallback
+   * looped instead of reaching the form. Read once on mount: a later re-render
+   * must not resurrect the redirect while they are mid-way through typing.
+   */
+  const params = useLocalSearchParams<{ manual?: string }>();
+  const manualMode = useRef(params.manual === '1').current;
+
   const [email, setEmail] = useState('');
   const [ssn, setSsn] = useState('');
   const [fullSsn, setFullSsn] = useState('');
@@ -92,7 +103,7 @@ export default function LoginScreen() {
       ]);
       if (cancelled) return;
       setCapability(cap);
-      if (enrolled && cap.available) {
+      if (enrolled && cap.available && !manualMode) {
         router.replace('/unlock');
         return;
       }
@@ -103,7 +114,7 @@ export default function LoginScreen() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [manualMode]);
 
   /** After signing in, offer to enable biometrics for next time. */
   const offerBiometrics = async (session: Session) => {
@@ -118,7 +129,19 @@ export default function LoginScreen() {
     });
     if (!ok) return;
 
-    await saveCredential({ ...credentials.current, name: displayName(session.employee.fullName) });
+    const saved = await saveCredential(credentials.current, {
+      name: displayName(session.employee.fullName),
+    });
+    // Silently failing here would promise a faster sign-in that never arrives:
+    // next launch would go straight to the form with no explanation.
+    if (!saved) {
+      await confirm({
+        title: `${capability.label} couldn’t be set up`,
+        message: `Your phone wouldn’t store the sign-in securely. You can try again from Profile. Signing in with your email still works.`,
+        confirmText: 'OK',
+        cancelText: 'Close',
+      });
+    }
   };
 
   const signIn = useSignIn(async (session) => {

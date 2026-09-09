@@ -1,3 +1,5 @@
+import Constants from 'expo-constants';
+
 import { mockApi } from '@/api/mock';
 import type { Paycheck, Session, StubDetail } from '@/api/types';
 
@@ -54,15 +56,50 @@ export interface PayrollApi {
 }
 
 /**
+ * Which backend this build talks to.
+ *
+ * Chosen by configuration rather than by editing code: `EXPO_PUBLIC_API_URL`
+ * (or `extra.apiUrl` in app.json) names a real payroll service; its absence
+ * means fixtures. One source of truth, so "am I on fixtures?" cannot disagree
+ * with "which adapter is running" — they used to be two independent constants
+ * that a single careless edit could desynchronise.
+ */
+const API_URL: string | undefined =
+  process.env.EXPO_PUBLIC_API_URL?.trim() ||
+  (Constants.expoConfig?.extra as { apiUrl?: string } | undefined)?.apiUrl?.trim() ||
+  undefined;
+
+/** True while we're running on fixtures rather than a real payroll backend. */
+export const IS_MOCK_BACKEND = !API_URL;
+
+/**
+ * Demo builds may run on fixtures; store builds may not.
+ *
+ * The `preview` EAS profile sets `EXPO_PUBLIC_ALLOW_FIXTURES` so the team can
+ * keep handing round an internal build while the real backend contract is
+ * still being obtained. `production` deliberately does not, so a store binary
+ * built before the adapter exists fails loudly at startup rather than showing
+ * employees somebody else's invented pay as if it were their own.
+ *
+ * Keyed on `__DEV__` rather than NODE_ENV because that is the flag Metro
+ * actually flips for a release bundle.
+ */
+const FIXTURES_ALLOWED = __DEV__ || process.env.EXPO_PUBLIC_ALLOW_FIXTURES === '1';
+
+if (IS_MOCK_BACKEND && !FIXTURES_ALLOWED) {
+  throw new Error(
+    'Olympic Paycheck was built without EXPO_PUBLIC_API_URL, so it would show fixture payroll. ' +
+      'Set the payroll API URL for this build profile before releasing.',
+  );
+}
+
+/**
  * Active backend.
  *
- * TODO(backend): replace `mockApi` with `httpApi` once Olympic Payroll provides
- * the base URL, endpoint contract and auth scheme for the API their current
- * Employee Access app uses. That is the only line that needs to change.
+ * TODO(backend): implement `httpApi` against this interface once Olympic
+ * Payroll provides the base URL, endpoint contract and auth scheme for the API
+ * their current Employee Access app uses, then return it when `API_URL` is set.
  */
 export function getApi(): PayrollApi {
   return mockApi;
 }
-
-/** True while we're running on fixtures rather than a real payroll backend. */
-export const IS_MOCK_BACKEND = true;
