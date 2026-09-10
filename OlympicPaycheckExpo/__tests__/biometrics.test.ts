@@ -207,7 +207,7 @@ describe('credential vault', () => {
   });
 
   it('round-trips a saved credential', async () => {
-    await expect(saveCredential(credential, meta)).resolves.toBe(true);
+    await expect(saveCredential(credential, meta)).resolves.toBe('saved');
 
     await expect(hasSavedCredential()).resolves.toBe(true);
     await expect(readCredential()).resolves.toEqual({ ok: true, credential });
@@ -287,7 +287,7 @@ describe('credential vault', () => {
   it('reports failure rather than throwing when the keychain refuses', async () => {
     jest.mocked(SecureStore.setItemAsync).mockRejectedValueOnce(new Error('keychain locked'));
 
-    await expect(saveCredential(credential, meta)).resolves.toBe(false);
+    await expect(saveCredential(credential, meta)).resolves.toBe('failed');
   });
 
   it('leaves nothing half-enrolled when the secret write fails', async () => {
@@ -372,5 +372,69 @@ describe('migration from the pre-split credential', () => {
 
     jest.mocked(SecureStore.setItemAsync).mockReset();
     await expect(hasSavedCredential()).resolves.toBe(true);
+  });
+});
+
+describe('reading through the OS gate', () => {
+  const credential = { email: 'sarah@cascade.test', ssnLast4: '4821' };
+  const store = () => (SecureStore as unknown as { __store: Map<string, string> }).__store;
+
+  /** Fail the gated read with the text the native layer produces. */
+  function failRead(message: string) {
+    jest.mocked(SecureStore.getItemAsync).mockImplementation(async (key) => {
+      if (key === 'olympic.paycheck.credential.v2') throw new Error(message);
+      return store().get(key) ?? null;
+    });
+  }
+
+  beforeEach(async () => {
+    await saveCredential(credential, { name: 'Sarah Mitchell' });
+  });
+
+  it.each([
+    ['Could not Authenticate the user: User canceled the authentication. Cancel', 'cancelled'],
+    ['User canceled the operation.', 'cancelled'],
+    ['Could not Authenticate the user: Timeout. Try again', 'cancelled'],
+    ['Could not Authenticate the user: Lockout. Too many attempts', 'lockout'],
+    ['Could not Authenticate the user: No biometrics are currently enrolled', 'unavailable'],
+    [
+      'Authentication failed. Provided passphrase/PIN is incorrect or there is no user authentication method configured for this device.',
+      'failed',
+    ],
+    ["Could not decrypt the value for key 'olympic.paycheck.credential.v2'. Caused by: bad data", 'locked'],
+  ])('reports "%s" as %s', async (message, reason) => {
+    failRead(message);
+
+    await expect(readCredential()).resolves.toEqual({ ok: false, reason });
+  });
+
+  /** A prompt that did not pass says nothing about the enrolment itself. */
+  it('keeps the enrolment when the prompt is cancelled', async () => {
+    failRead('User canceled the operation.');
+
+    await readCredential();
+
+    await expect(hasSavedCredential()).resolves.toBe(true);
+  });
+
+  /**
+   * Android returns nothing, instead of throwing, once a biometric change has
+   * invalidated the key. With the enrolment record still present, that is a
+   * dead enrolment, not an empty device.
+   */
+  it('reports a vanished secret behind a live enrolment as locked', async () => {
+    store().delete('olympic.paycheck.credential.v2');
+
+    await expect(readCredential()).resolves.toEqual({ ok: false, reason: 'locked' });
+  });
+
+  it('reports cancelling the enrolment prompt as a choice, not a failure', async () => {
+    await clearCredential();
+    jest
+      .mocked(SecureStore.setItemAsync)
+      .mockRejectedValueOnce(new Error('Could not Authenticate the user: User canceled the authentication. Cancel'));
+
+    await expect(saveCredential(credential)).resolves.toBe('cancelled');
+    await expect(hasSavedCredential()).resolves.toBe(false);
   });
 });

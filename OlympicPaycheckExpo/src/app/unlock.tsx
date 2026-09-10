@@ -47,9 +47,9 @@ function FingerprintGlyph({ color, size = 46 }: { color: string; size?: number }
 /**
  * Why the last unlock attempt didn't sign the employee in.
  *
- * `stale` is the one that can't be retried: the keychain item was invalidated
- * when the device's biometric set changed, so the saved sign-in is gone even
- * though the enrolment record isn't.
+ * `stale` is the one that can't be retried: the stored secret can never be
+ * read again (usually because the device's biometric set changed), so the
+ * enrolment has been cleared and the employee must set it up again.
  */
 type Failure = 'cancelled' | 'failed' | 'lockout' | 'unavailable' | 'stale';
 
@@ -72,40 +72,66 @@ export default function UnlockScreen() {
   /** Guards against a second prompt while one is already on screen. */
   const busyRef = useRef(false);
 
+  /**
+   * Whether the saved secret carries the OS gate. When it does, reading it
+   * presents the biometric prompt, and the app must not prompt as well.
+   */
+  const securedRef = useRef(false);
+
   const signIn = useSignIn((session) => {
     router.replace(session.companies.length > 1 ? '/companies' : '/home');
   });
 
+  /**
+   * One unlock attempt, with exactly one biometric prompt.
+   *
+   * For an OS-gated enrolment the secure-store read presents the prompt
+   * itself, so running `verify()` first made the employee scan twice. The
+   * app's own check now runs only when the secret has no OS gate (Expo Go, or
+   * an enrolment written by an older build), where it is the only check.
+   */
   const attempt = useCallback(async (label: string) => {
     if (busyRef.current) return;
     busyRef.current = true;
+    // The previous attempt's sign-in error must not stay on screen, above the
+    // new prompt and above any new failure, once the employee tries again.
+    signIn.reset();
     setFailure(null);
     setPhase('prompting');
 
-    const result = await verify(`Sign in to Olympic Paycheck with ${label}`);
-
-    if (!result.ok) {
-      busyRef.current = false;
-      setPhase('idle');
-      setFailure(result.reason);
-      return;
+    if (!securedRef.current) {
+      const result = await verify(`Sign in to Olympic Paycheck with ${label}`);
+      if (!result.ok) {
+        busyRef.current = false;
+        setPhase('idle');
+        setFailure(result.reason);
+        return;
+      }
     }
 
-    // Verification is done; reading the credential may prompt again (the item
-    // is OS-gated) but the biometric phase is over either way.
     const stored = await readCredential();
     busyRef.current = false;
 
     if (!stored.ok) {
-      // `missing` means the enrolment vanished between screens — nothing to
-      // unlock and nothing to explain, so just hand over to the form. Only a
-      // `locked` vault warrants staying here to say what happened.
       if (stored.reason === 'missing') {
-        router.replace('/');
+        // Nothing is enrolled after all. The manual flag makes the login
+        // screen show its form rather than sending the employee back here.
+        router.replace(MANUAL_LOGIN_PARAMS);
         return;
       }
+      if (stored.reason === 'locked') {
+        // Unreadable for good. Clearing it is what lets the next launch go
+        // straight to the form, and lets an email sign-in offer biometrics
+        // again; left in place, it brought the employee back to this failure
+        // on every launch.
+        await clearCredential();
+        setPhase('idle');
+        setFailure('stale');
+        return;
+      }
+      // The prompt itself did not pass: cancelled, no match, locked out.
       setPhase('idle');
-      setFailure('stale');
+      setFailure(stored.reason);
       return;
     }
 
@@ -130,7 +156,9 @@ export default function UnlockScreen() {
       setCapability(cap);
       // Greet by name without touching the secret: the name lives in the
       // ungated enrolment record precisely so this read is safe pre-auth.
-      setName((await readEnrollment())?.name);
+      const enrollment = await readEnrollment();
+      setName(enrollment?.name);
+      securedRef.current = enrollment?.secured ?? false;
       // Nothing to unlock with. `/` only bounces back here when biometrics are
       // available, so this hands over to the form rather than looping.
       if (cap.available) attempt(cap.label);
@@ -154,37 +182,45 @@ export default function UnlockScreen() {
   };
 
   const label = capability?.label ?? 'Biometrics';
-  const busy = phase === 'checking' || phase === 'prompting' || phase === 'signing-in';
+  const prompting = phase === 'checking' || phase === 'prompting';
+  const busy = prompting || phase === 'signing-in';
 
+  const promptHeadline =
+    capability?.kind === 'fingerprint' ? 'Touch the sensor to sign in' : 'Look at your phone to sign in';
+  const promptDetail = `${label} unlocks the sign-in saved on this device.`;
+
+  // While a prompt is up, describe the prompt, not how the last attempt ended.
   const headline =
     phase === 'signing-in'
       ? 'Signing you in…'
-      : signIn.isError
-        ? 'We couldn’t sign you in'
-        : failure === 'failed'
-          ? `${label} didn’t match`
-          : failure === 'lockout'
-            ? `${label} is locked`
-            : failure === 'unavailable'
-              ? `${label} isn’t available`
-              : failure === 'stale'
-                ? 'Saved sign-in expired'
-                : failure === 'cancelled'
-                  ? 'Sign in to continue'
-                  : capability?.kind === 'fingerprint'
-                    ? 'Touch the sensor to sign in'
-                    : 'Look at your phone to sign in';
+      : prompting
+        ? promptHeadline
+        : signIn.isError
+          ? 'We couldn’t sign you in'
+          : failure === 'failed'
+            ? `${label} didn’t match`
+            : failure === 'lockout'
+              ? `${label} is locked`
+              : failure === 'unavailable'
+                ? `${label} isn’t available`
+                : failure === 'stale'
+                  ? 'Saved sign-in expired'
+                  : failure === 'cancelled'
+                    ? 'Sign in to continue'
+                    : promptHeadline;
 
   // Lockout and permission problems are fixable by the employee, so say how.
-  const detail = signIn.isError
-    ? messageFor(signIn.error)
-    : failure === 'lockout'
-      ? `Too many attempts. Lock your phone, unlock it with your passcode once to re-enable ${label}, then tap Try Again.`
-      : failure === 'unavailable'
-        ? `Turn ${label} on for this app in your phone’s Settings, or sign in with your email.`
-        : failure === 'stale'
-          ? `Your ${label} setup changed on this phone, so the saved sign-in was cleared for your security. Sign in with your email to set it up again.`
-          : `${label} unlocks the sign-in saved on this device.`;
+  const detail = busy
+    ? promptDetail
+    : signIn.isError
+      ? messageFor(signIn.error)
+      : failure === 'lockout'
+        ? `Too many attempts. Lock your phone, unlock it with your passcode once to re-enable ${label}, then tap Try Again.`
+        : failure === 'unavailable'
+          ? `Turn ${label} on for this app in your phone’s Settings, or sign in with your email.`
+          : failure === 'stale'
+            ? `The sign-in saved on this phone can no longer be unlocked, usually because the ${label} setup changed, so it has been removed. Sign in with your email to set up ${label} again.`
+            : promptDetail;
 
   // A stale keychain item cannot be re-read no matter how many times the
   // biometric passes, so offering "Try Again" would only waste the employee's

@@ -129,15 +129,16 @@ export default function LoginScreen() {
     });
     if (!ok) return;
 
-    const saved = await saveCredential(credentials.current, {
+    const result = await saveCredential(credentials.current, {
       name: displayName(session.employee.fullName),
     });
-    // Silently failing here would promise a faster sign-in that never arrives:
-    // next launch would go straight to the form with no explanation.
-    if (!saved) {
+    // Dismissing the phone's own prompt is a choice, not a failure, so it gets
+    // no message. A real failure does: otherwise the faster sign-in promised a
+    // moment ago would never arrive, with no explanation.
+    if (result === 'failed') {
       await confirm({
         title: `${capability.label} couldn’t be set up`,
-        message: `Your phone wouldn’t store the sign-in securely. You can try again from Profile. Signing in with your email still works.`,
+        message: `Your phone wouldn’t store the sign-in securely. To try again, sign out and sign back in. Signing in with your email still works.`,
         confirmText: 'OK',
         cancelText: 'Close',
       });

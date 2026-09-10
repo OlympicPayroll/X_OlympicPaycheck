@@ -60,17 +60,40 @@ export interface PayrollApi {
  *
  * Chosen by configuration rather than by editing code: `EXPO_PUBLIC_API_URL`
  * (or `extra.apiUrl` in app.json) names a real payroll service; its absence
- * means fixtures. One source of truth, so "am I on fixtures?" cannot disagree
- * with "which adapter is running" — they used to be two independent constants
- * that a single careless edit could desynchronise.
+ * means fixtures.
  */
 const API_URL: string | undefined =
   process.env.EXPO_PUBLIC_API_URL?.trim() ||
   (Constants.expoConfig?.extra as { apiUrl?: string } | undefined)?.apiUrl?.trim() ||
   undefined;
 
-/** True while we're running on fixtures rather than a real payroll backend. */
-export const IS_MOCK_BACKEND = !API_URL;
+/**
+ * The adapter for this build, chosen once at startup.
+ *
+ * A URL with no adapter to use it is a misconfiguration, not a reason to keep
+ * serving fixtures quietly: that combination hid the demo banner and got past
+ * the release guard below while employees saw invented pay. It fails here
+ * instead, until `httpApi` exists.
+ */
+function selectApi(): PayrollApi {
+  if (API_URL) {
+    throw new Error(
+      'EXPO_PUBLIC_API_URL is set, but the HTTP payroll adapter has not been implemented yet. ' +
+        'Remove the URL to run on fixture data, or implement httpApi in src/api/ and return it from selectApi().',
+    );
+  }
+  return mockApi;
+}
+
+const activeApi = selectApi();
+
+/**
+ * True while we're running on fixtures rather than a real payroll backend.
+ *
+ * Derived from the adapter actually in use, so the demo banner and the release
+ * guard can never disagree with what `getApi()` returns.
+ */
+export const IS_MOCK_BACKEND = activeApi === mockApi;
 
 /**
  * Demo builds may run on fixtures; store builds may not.
@@ -98,8 +121,9 @@ if (IS_MOCK_BACKEND && !FIXTURES_ALLOWED) {
  *
  * TODO(backend): implement `httpApi` against this interface once Olympic
  * Payroll provides the base URL, endpoint contract and auth scheme for the API
- * their current Employee Access app uses, then return it when `API_URL` is set.
+ * their current Employee Access app uses, then return it from `selectApi()`
+ * when `API_URL` is set.
  */
 export function getApi(): PayrollApi {
-  return mockApi;
+  return activeApi;
 }

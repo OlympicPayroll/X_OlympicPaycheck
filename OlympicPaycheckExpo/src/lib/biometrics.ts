@@ -12,8 +12,10 @@ import { Platform } from 'react-native';
  *      expo-secure-store, encrypted at rest with hardware-backed keys AND
  *      gated by `requireAuthentication` so the OS itself refuses to hand the
  *      bytes back without a biometric match.
- *   3. On the next launch the read is what triggers the prompt; the app's own
- *      `verify()` call is a second, earlier gate rather than the only one.
+ *   3. On the next launch, reading the gated item *is* the biometric prompt,
+ *      and the only one the employee sees. `verify()` runs instead only for an
+ *      enrolment stored without the OS gate (Expo Go, or one written by an
+ *      older build), so every unlock asks for exactly one scan.
  *
  * Storage is deliberately split in two:
  *   • META_KEY   — display name + enrolment flag. Not secret, never gated, so
@@ -49,18 +51,28 @@ export type Enrollment = {
   secured: boolean;
 };
 
+/** Outcomes of an OS biometric prompt that did not pass. All are worth retrying. */
+export type GateFailure = 'cancelled' | 'failed' | 'lockout' | 'unavailable';
+
 /**
  * Why a credential read produced nothing.
  *   • `missing` — nothing is enrolled on this device.
- *   • `locked`  — something IS enrolled but the OS refused to release it. On
- *     iOS this is what an invalidated key looks like after the employee adds a
- *     fingerprint or re-enrols Face ID: `.biometryCurrentSet` ties the item to
- *     the biometric set that existed when it was written. It is unrecoverable,
- *     so the UI must offer "forget this device" rather than a bare retry.
+ *   • `locked`  — an enrolment exists but its secret can never be read again.
+ *     The key was invalidated when the device's biometric set changed (Android
+ *     reports this by returning nothing at all; iOS drops `.biometryCurrentSet`
+ *     items), or the stored value is corrupt. Retrying cannot help, so callers
+ *     should clear the enrolment and send the employee to re-enrol.
+ *   • a `GateFailure` — the OS prompt guarding the read did not pass.
  */
 export type CredentialResult =
   | { ok: true; credential: SavedCredential }
-  | { ok: false; reason: 'missing' | 'locked' };
+  | { ok: false; reason: 'missing' | 'locked' | GateFailure };
+
+/**
+ * Outcome of enrolling. On Android the gated write itself asks for a
+ * fingerprint, so `cancelled` means the employee dismissed that prompt.
+ */
+export type SaveResult = 'saved' | 'cancelled' | 'failed';
 
 /** What the device will actually use, so copy matches the real prompt. */
 export type BiometricKind = 'face' | 'fingerprint' | 'iris' | 'none';
@@ -73,9 +85,7 @@ export type BiometricCapability = {
   label: string;
 };
 
-export type VerifyResult =
-  | { ok: true }
-  | { ok: false; reason: 'cancelled' | 'failed' | 'lockout' | 'unavailable' };
+export type VerifyResult = { ok: true } | { ok: false; reason: GateFailure };
 
 function labelFor(kind: BiometricKind): string {
   if (Platform.OS === 'ios') {
@@ -113,8 +123,11 @@ const FACE_ID_BLOCKED_BY_EXPO_GO = Platform.OS === 'ios' && IS_EXPO_GO;
  */
 export const OS_AUTH_SUPPORTED = !IS_EXPO_GO;
 
-/** Shown by the OS when the gated item is read. */
-const AUTH_PROMPT = 'Unlock your saved Olympic Paycheck sign-in';
+/**
+ * Title of the OS prompt the gated item presents. For an OS-gated enrolment
+ * this is the unlock prompt itself, so it reads like one.
+ */
+const AUTH_PROMPT = 'Sign in to Olympic Paycheck';
 
 function secretOptions(): SecureStore.SecureStoreOptions {
   return {
@@ -231,6 +244,43 @@ export function verify(promptMessage: string): Promise<VerifyResult> {
   return inFlight;
 }
 
+/**
+ * Translate an error from a gated secure-store operation into what happened.
+ *
+ * expo-secure-store reports the outcome of its biometric prompt only as error
+ * text (Android: "Could not Authenticate the user: User canceled the
+ * authentication…", iOS: "User canceled the operation."), so the text is all
+ * there is to go on. Anything that is not about the prompt, such as a decrypt
+ * or keystore failure, means the stored value itself is unusable.
+ */
+function classifyGateError(error: unknown): GateFailure | 'locked' {
+  const text = String((error as { message?: unknown } | null)?.message ?? error).toLowerCase();
+  const mentions = (...fragments: string[]) => fragments.some((fragment) => text.includes(fragment));
+
+  // Dismissed, or interrupted before it could finish: worth another go.
+  if (mentions('cancel', 'already in progress', 'not in the foreground', 'interaction is not allowed', 'timeout')) {
+    return 'cancelled';
+  }
+  if (mentions('lockout')) return 'lockout';
+  if (
+    mentions(
+      'no biometrics',
+      'not enrolled',
+      'no hardware',
+      'hardware unavailable',
+      'hardware not present',
+      'unsupported',
+      'security update',
+      'requires android api',
+    )
+  ) {
+    return 'unavailable';
+  }
+  // The prompt ran and did not pass.
+  if (mentions('authenticat')) return 'failed';
+  return 'locked';
+}
+
 function parse<T>(raw: string | null): T | null {
   if (!raw) return null;
   try {
@@ -273,27 +323,28 @@ export async function readEnrollment(): Promise<Enrollment | null> {
 export async function saveCredential(
   credential: SavedCredential,
   meta: { name?: string } = {},
-): Promise<boolean> {
+): Promise<SaveResult> {
   const enrollment: Enrollment = { name: meta.name, secured: OS_AUTH_SUPPORTED };
   try {
-    // The gated write is the one that can fail (no NSFaceIDUsageDescription,
-    // keystore full, biometrics removed mid-flow).
+    // The gated write is the one that can prompt (Android needs a biometric to
+    // use the key, even to encrypt) and the one that can fail (no
+    // NSFaceIDUsageDescription, keystore full, biometrics removed mid-flow).
     await SecureStore.setItemAsync(SECRET_KEY, JSON.stringify(credential), secretOptions());
     await SecureStore.setItemAsync(META_KEY, JSON.stringify(enrollment), {
       keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
     });
-  } catch {
+  } catch (error) {
     // Roll back the new layout only. A legacy item, if one is being migrated,
     // is deliberately left alone — losing it here would silently un-enrol a
     // device that was working a moment ago.
     await discard(SECRET_KEY);
     await discard(META_KEY);
-    return false;
+    return classifyGateError(error) === 'cancelled' ? 'cancelled' : 'failed';
   }
 
   // Both halves landed; the pre-split item is now redundant.
   await discard(LEGACY_KEY);
-  return true;
+  return 'saved';
 }
 
 /** Best-effort delete of one key. Never throws. */
@@ -311,18 +362,19 @@ async function discard(key: string): Promise<boolean> {
 /**
  * Read the stored credential.
  *
- * Call only after `verify()` succeeds — but note the OS gate means this call
- * may itself present a prompt, and may fail permanently if the biometric set
- * changed since enrolment. Callers must handle `locked`.
+ * For an OS-gated enrolment this call presents the biometric prompt itself, so
+ * callers must not run `verify()` first. It never throws: a prompt that did not
+ * pass comes back as its `GateFailure`, and a secret that can never be read
+ * again comes back as `locked`.
  */
 export async function readCredential(): Promise<CredentialResult> {
-  let raw: string | null = null;
+  let raw: string | null;
   try {
     raw = await SecureStore.getItemAsync(SECRET_KEY, secretOptions());
-  } catch {
-    // Distinguish "the gate refused" from "nothing is here": an enrolment that
-    // still exists but can't be opened needs different copy and a way out.
-    return { ok: false, reason: (await hasSavedCredential()) ? 'locked' : 'missing' };
+  } catch (error) {
+    // Either the prompt guarding the read did not pass, which is worth a
+    // retry, or the value could not be decrypted, which is permanent.
+    return { ok: false, reason: classifyGateError(error) };
   }
 
   const credential = parse<SavedCredential>(raw);
@@ -340,10 +392,15 @@ export async function readCredential(): Promise<CredentialResult> {
     return { ok: true, credential: migrated };
   }
 
-  // Something was stored but it isn't a credential — truncated write, a
-  // half-finished migration, keychain corruption. Unrecoverable in the same
-  // way an invalidated key is, and it deserves the same exit: re-enrol.
-  return { ok: false, reason: raw === null ? 'missing' : 'locked' };
+  // No usable secret anywhere. If an enrolment record still exists, the secret
+  // behind it is gone for good: Android returns nothing for a key invalidated
+  // by a biometric change instead of throwing, and a corrupt value is no
+  // better. Calling that `missing` sent the employee to the login screen,
+  // which saw the enrolment and sent them straight back to unlock, forever.
+  if (raw === null && !(await hasSavedCredential())) {
+    return { ok: false, reason: 'missing' };
+  }
+  return { ok: false, reason: 'locked' };
 }
 
 async function readLegacy(): Promise<string | null> {

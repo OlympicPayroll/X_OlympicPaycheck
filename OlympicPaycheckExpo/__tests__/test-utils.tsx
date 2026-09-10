@@ -160,9 +160,10 @@ export async function renderSignedIn(ui: ReactElement, session: Session = SESSIO
   return {
     ...view,
     settle,
-    switchEmployer: async (company: Company) => {
+    /** Pass `{ settle: false }` to observe the screen while the switch is still loading. */
+    switchEmployer: async (company: Company, { settle: wait = true }: { settle?: boolean } = {}) => {
       await act(async () => switchTo?.(company));
-      await settle();
+      if (wait) await settle();
     },
   };
 }

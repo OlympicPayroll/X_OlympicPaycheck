@@ -1,4 +1,4 @@
-import { createContext, ReactNode, useCallback, useContext, useState } from 'react';
+import { createContext, ReactNode, useCallback, useContext, useRef, useState } from 'react';
 import { ActionSheetIOS, Alert, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Radius, Spacing } from '@/constants/theme';
@@ -48,6 +48,28 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const theme = useTheme();
   const [pending, setPending] = useState<Pending | null>(null);
 
+  /** The request on screen, readable synchronously so a newer one can retire it. */
+  const current = useRef<Pending | null>(null);
+
+  /**
+   * Put a request on screen. Only one Material dialog can show at a time, and
+   * replacing the state outright left the earlier caller awaiting a dialog
+   * that no longer existed. It is settled as dismissed instead, so the code
+   * waiting on it can finish.
+   */
+  const show = useCallback((next: Pending) => {
+    const previous = current.current;
+    if (previous?.kind === 'confirm') previous.resolve(false);
+    if (previous?.kind === 'choose') previous.resolve(null);
+    current.current = next;
+    setPending(next);
+  }, []);
+
+  const close = () => {
+    current.current = null;
+    setPending(null);
+  };
+
   const confirm = useCallback((opts: ConfirmOptions) => {
     return new Promise<boolean>((resolve) => {
       if (Platform.OS === 'ios') {
@@ -60,10 +82,10 @@ export function DialogProvider({ children }: { children: ReactNode }) {
           },
         ]);
       } else {
-        setPending({ kind: 'confirm', ...opts, resolve });
+        show({ kind: 'confirm', ...opts, resolve });
       }
     });
-  }, []);
+  }, [show]);
 
   const choose = useCallback((opts: ChooseOptions) => {
     return new Promise<number | null>((resolve) => {
@@ -79,25 +101,25 @@ export function DialogProvider({ children }: { children: ReactNode }) {
           (index) => resolve(index === opts.options.length ? null : index),
         );
       } else {
-        setPending({ kind: 'choose', ...opts, resolve });
+        show({ kind: 'choose', ...opts, resolve });
       }
     });
-  }, []);
+  }, [show]);
 
   const dismiss = () => {
     if (pending?.kind === 'confirm') pending.resolve(false);
     if (pending?.kind === 'choose') pending.resolve(null);
-    setPending(null);
+    close();
   };
 
   const settleConfirm = (value: boolean) => {
     if (pending?.kind === 'confirm') pending.resolve(value);
-    setPending(null);
+    close();
   };
 
   const settleChoose = (index: number) => {
     if (pending?.kind === 'choose') pending.resolve(index);
-    setPending(null);
+    close();
   };
 
   return (

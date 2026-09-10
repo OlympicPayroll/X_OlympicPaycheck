@@ -33,7 +33,14 @@ export default function HistoryScreen() {
     setYear(available[0]);
   }, [available, year]);
 
-  const paychecks = usePaychecks(year);
+  /**
+   * Only ask for a year the current employer actually has. Straight after an
+   * employer switch, the previous employer's year is still selected while the
+   * new year list loads; querying with it asked the backend for a period the
+   * new employer may never have had.
+   */
+  const selectedYear = year !== undefined && available?.includes(year) ? year : undefined;
+  const paychecks = usePaychecks(selectedYear);
 
   /**
    * An employee with no payroll history at all leaves `year` undefined, which

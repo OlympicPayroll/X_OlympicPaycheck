@@ -1,4 +1,4 @@
-import { fireEvent, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, waitFor } from '@testing-library/react-native';
 import { Alert, type AlertButton } from 'react-native';
 
 import { mockApi } from '@/api/mock';
@@ -25,7 +25,7 @@ const BONUS_ID = 'H-20260718-bonus-E-88214';
 /** Dialogs raised during a test, newest last. */
 let dialogs: { title: string; buttons: AlertButton[] }[] = [];
 /** How to answer each dialog, by title fragment. Default: press confirm. */
-let answers: (title: string) => 'confirm' | 'cancel';
+let answers: (title: string) => 'confirm' | 'cancel' | 'hold';
 
 beforeEach(() => {
   dialogs = [];
@@ -39,7 +39,9 @@ beforeEach(() => {
     dialogs.push({ title: String(title), buttons: list });
     const cancel = list.find((b) => b.style === 'cancel') ?? list[0];
     const confirm = list.find((b) => b.style !== 'cancel') ?? list[list.length - 1];
-    (answers(String(title)) === 'confirm' ? confirm : cancel)?.onPress?.();
+    const choice = answers(String(title));
+    if (choice === 'hold') return; // Left on screen for the test to answer.
+    (choice === 'confirm' ? confirm : cancel)?.onPress?.();
   });
 });
 
@@ -79,6 +81,19 @@ describe('marking the payroll read', () => {
 });
 
 describe('emailing a copy', () => {
+  /**
+   * Wait until the whole email interaction has finished.
+   *
+   * A tap only starts it: the confirmation, the send and any retry dialogs play
+   * out afterwards, and the action re-enables itself at the very end. Waiting
+   * for that keeps the interaction's last state update inside the test.
+   */
+  async function emailFinished(app: Awaited<ReturnType<typeof openStub>>) {
+    await waitFor(() =>
+      expect(app.getByLabelText('Email a copy').props.accessibilityState).toMatchObject({ disabled: false }),
+    );
+  }
+
   it('offers the action when there is a delivery to re-send', async () => {
     const app = await openStub({ id: CHECK_ID, sentId: SENT_ID });
 
@@ -104,6 +119,7 @@ describe('emailing a copy', () => {
 
     await waitFor(() => expect(email).toHaveBeenCalledWith({ sentId: SENT_ID }));
     expect(email).not.toHaveBeenCalledWith({ sentId: CHECK_ID });
+    await emailFinished(app);
   });
 
   it('confirms once it has gone', async () => {
@@ -112,6 +128,7 @@ describe('emailing a copy', () => {
     await fireEvent.press(await app.findByLabelText('Email a copy'));
 
     await waitFor(() => expect(titles()).toContain('Pay stub sent'));
+    await emailFinished(app);
   });
 
   it('does not send when the employee backs out of the confirmation', async () => {
@@ -123,6 +140,7 @@ describe('emailing a copy', () => {
 
     await waitFor(() => expect(titles()).toContain('Email this pay stub?'));
     expect(email).not.toHaveBeenCalled();
+    await emailFinished(app);
   });
 
   /** A failed send used to close the sheet in silence. */
@@ -135,6 +153,7 @@ describe('emailing a copy', () => {
 
     await waitFor(() => expect(titles()).toContain('We couldn’t send it'));
     expect(titles()).not.toContain('Pay stub sent');
+    await emailFinished(app);
   });
 
   it('offers a retry that actually re-sends', async () => {
@@ -146,6 +165,31 @@ describe('emailing a copy', () => {
 
     await waitFor(() => expect(email).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(titles()).toContain('Pay stub sent'));
+    await emailFinished(app);
+  });
+
+  /**
+   * The confirmation itself is the gap: nothing is in flight while it is on
+   * screen, so a guard keyed on the request alone let a second tap open a
+   * second confirmation and send the stub twice.
+   */
+  it('does not open a second confirmation while the first is still showing', async () => {
+    const email = jest.spyOn(mockApi, 'emailStub');
+    answers = (title) => (title === 'Email this pay stub?' ? 'hold' : 'confirm');
+    const app = await openStub({ id: CHECK_ID, sentId: SENT_ID });
+    const button = await app.findByLabelText('Email a copy');
+
+    await fireEvent.press(button);
+    await fireEvent.press(button);
+
+    expect(titles().filter((t) => t === 'Email this pay stub?')).toHaveLength(1);
+
+    const send = dialogs[0].buttons.find((b) => b.style !== 'cancel');
+    await act(async () => send?.onPress?.());
+
+    await waitFor(() => expect(titles()).toContain('Pay stub sent'));
+    await emailFinished(app);
+    expect(email).toHaveBeenCalledTimes(1);
   });
 
   it('ignores repeat taps while a send is still in flight', async () => {
@@ -158,6 +202,7 @@ describe('emailing a copy', () => {
     await fireEvent.press(button);
 
     await waitFor(() => expect(titles()).toContain('Pay stub sent'));
+    await emailFinished(app);
     expect(email).toHaveBeenCalledTimes(1);
   });
 });

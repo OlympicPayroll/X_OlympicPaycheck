@@ -1,4 +1,4 @@
-import { fireEvent, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
 
 import { mockApi } from '@/api/mock';
@@ -18,6 +18,15 @@ import { OTHER_COMPANY, renderSignedIn } from './test-utils';
 jest.setTimeout(30_000);
 
 const push = router.push as jest.Mock;
+
+/** A promise a test can settle when it chooses. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
 
 async function openHistory() {
   const app = await renderSignedIn(<HistoryScreen />);
@@ -158,6 +167,32 @@ describe('switching employer', () => {
 
     await app.findByText('2019');
     expect(app.queryByText('2026')).toBeNull();
+  });
+
+  /**
+   * Straight after a switch, the previous employer's year is still selected
+   * while the new year list loads. It must not be sent to the new employer: a
+   * real backend would be asked for a period that employer may never have had.
+   */
+  it('does not ask the new employer for the old employer’s year', async () => {
+    const years = jest.spyOn(mockApi, 'getPayYears');
+    const paychecks = jest.spyOn(mockApi, 'getPaychecks');
+    const app = await openHistory();
+    await app.findByText('Jul 18, 2026');
+
+    const newYears = deferred<number[]>();
+    years.mockReturnValueOnce(newYears.promise);
+    await app.switchEmployer(OTHER_COMPANY, { settle: false });
+    await waitFor(() => expect(years).toHaveBeenCalledTimes(2));
+
+    const forNewEmployer = () =>
+      paychecks.mock.calls.filter(([params]) => params.employeeId === OTHER_COMPANY.employeeId);
+    expect(forNewEmployer()).toHaveLength(0);
+
+    await act(async () => newYears.resolve([2019, 2018]));
+    await app.settle();
+
+    expect(forNewEmployer().map(([params]) => params.year)).toEqual([2019]);
   });
 
   it('loads the new employer’s payroll, not the old one’s', async () => {

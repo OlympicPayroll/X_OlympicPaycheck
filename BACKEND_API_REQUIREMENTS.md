@@ -304,7 +304,8 @@ The app picks its backend from configuration, not from an edited source file:
 
 - `EXPO_PUBLIC_API_URL` (or `extra.apiUrl` in `app.json`) names the real
   payroll service. When it is absent the app runs on fixtures and shows a demo
-  banner.
+  banner. Setting it before the `httpApi` adapter exists stops the app at
+  startup, so a build can never serve fixtures with the banner hidden.
 - The `production` EAS profile does not set `EXPO_PUBLIC_API_URL` yet; add it to
   that profile's `env` once the URL is known. Until then, a production build
   **throws at startup** rather than shipping invented payroll to employees.
@@ -312,7 +313,8 @@ The app picks its backend from configuration, not from an edited source file:
   builds keep working on fixtures while this contract is being agreed.
 
 So the single thing needed to switch the app onto the real service is the URL,
-plus the `httpApi` adapter implementing the interface in `src/api/client.ts`.
+plus the `httpApi` adapter implementing the interface in `src/api/client.ts`,
+returned from `selectApi()`.
 
 ---
 

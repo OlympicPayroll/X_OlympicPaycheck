@@ -1,5 +1,5 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import { ReactNode, useEffect, useState } from 'react';
+import { ReactNode, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
@@ -50,45 +50,50 @@ export default function StubScreen() {
   const canEmail = !!sentId && !!stub;
 
   /**
-   * Send, and report either outcome.
-   *
-   * Recursive on retry so a second attempt behaves exactly like the first —
-   * confirming on success, offering another go on failure. Passing the
-   * callbacks to `mutate` only covers that one call, so a retry issued
-   * without them would succeed in complete silence.
+   * Held for the whole email interaction (confirmation, send, and any
+   * retries), not only while the request is in flight. `isPending` is false
+   * while a dialog is up, so a second tap during the confirmation opened a
+   * second one and could send the stub twice.
    */
-  const send = (deliveryId: string) => {
-    emailStub.mutate(
-      { sentId: deliveryId },
-      {
-        onSuccess: () => confirm({ title: 'Pay stub sent', confirmText: 'Done', cancelText: 'Close' }),
-        // A rejected send used to close the sheet and say nothing at all, so
-        // the employee had no way to tell it hadn't gone.
-        onError: async (error) => {
+  const emailingRef = useRef(false);
+  const [emailing, setEmailing] = useState(false);
+
+  const onEmail = async () => {
+    if (!sentId || emailingRef.current) return;
+    emailingRef.current = true;
+    setEmailing(true);
+
+    try {
+      const ok = await confirm({
+        title: 'Email this pay stub?',
+        message: 'We’ll send a copy to the email address on your payroll record.',
+        confirmText: 'Send',
+      });
+      if (!ok) return;
+
+      // Every retry behaves like the first attempt: confirm on success, offer
+      // another go on failure. A rejected send used to close the sheet and say
+      // nothing at all.
+      for (;;) {
+        try {
+          await emailStub.mutateAsync({ sentId });
+        } catch (error) {
           const retry = await confirm({
             title: 'We couldn’t send it',
             message: messageFor(error),
             confirmText: 'Try Again',
             cancelText: 'Close',
           });
-          if (retry) send(deliveryId);
-        },
-      },
-    );
-  };
-
-  const onEmail = async () => {
-    // Repeat taps must not queue up duplicate emails to the employee.
-    if (!sentId || emailStub.isPending) return;
-
-    const ok = await confirm({
-      title: 'Email this pay stub?',
-      message: 'We’ll send a copy to the email address on your payroll record.',
-      confirmText: 'Send',
-    });
-    if (!ok) return;
-
-    send(sentId);
+          if (retry) continue;
+          return;
+        }
+        await confirm({ title: 'Pay stub sent', confirmText: 'Done', cancelText: 'Close' });
+        return;
+      }
+    } finally {
+      emailingRef.current = false;
+      setEmailing(false);
+    }
   };
 
   /**
@@ -110,12 +115,10 @@ export default function StubScreen() {
             // Hidden until there is a delivery to re-send and a stub to send:
             // offering the action and then failing is worse than not offering.
             canEmail ? (
-              <TitleIconButton
-                label="Email a copy"
-                onPress={onEmail}
-                disabled={emailStub.isPending}
-              >
-                <Mail color={emailStub.isPending ? theme.faint : theme.brand} size={18} />
+              // The interaction outlives the tap (dialogs, the send, retries),
+              // so the button starts it without waiting on it.
+              <TitleIconButton label="Email a copy" onPress={() => void onEmail()} disabled={emailing}>
+                <Mail color={emailing ? theme.faint : theme.brand} size={18} />
               </TitleIconButton>
             ) : undefined
           }
