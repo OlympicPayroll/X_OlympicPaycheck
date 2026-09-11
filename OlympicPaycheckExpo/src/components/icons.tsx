@@ -71,3 +71,15 @@ export const Mail = ({ color, size = 16, strokeWidth = 2 }: IconProps) => (
     <Path d="M3.5 7l8.5 6 8.5-6" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
   </Svg>
 );
+
+export const Download = ({ color, size = 16, strokeWidth = 2 }: IconProps) => (
+  <Svg {...base(size)}>
+    <Path
+      d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14"
+      stroke={color}
+      strokeWidth={strokeWidth}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </Svg>
+);

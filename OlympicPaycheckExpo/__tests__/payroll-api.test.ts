@@ -199,7 +199,7 @@ describe('pay stub', () => {
     expect(regular?.detail).toMatch(/hrs · \$\d+\.\d{2}\/hr/);
   });
 
-  it('withholds the four expected taxes', async () => {
+  it('withholds federal and state taxes, and New Jersey’s employee contributions', async () => {
     const [paycheck] = await call(api.getPaychecks({ employeeId: EMPLOYEE, year: 2026 }));
     const stub = await call(api.getStub({ companyId: COMPANY, paycheckId: paycheck.id }));
     expect(stub.taxes.map((t) => t.label)).toEqual([
@@ -207,7 +207,32 @@ describe('pay stub', () => {
       'Social Security',
       'Medicare',
       'State income',
+      'NJ UI/WF/SWF',
+      'NJ DI',
+      'NJ FLI',
     ]);
+  });
+
+  /**
+   * NJ unemployment (UI/WF/SWF) is only owed on wages up to the year's base.
+   * By late in the year the fixtures' pay has passed it, and a stub that kept
+   * withholding it would be charging the employee money they don't owe.
+   */
+  it('stops NJ unemployment once the year’s wages pass its wage base', async () => {
+    const paychecks = await call(api.getPaychecks({ employeeId: EMPLOYEE, year: 2025 }));
+    const [december] = paychecks;
+    const stub = await call(api.getStub({ companyId: COMPANY, paycheckId: december.id }));
+
+    expect(stub.ytd.gross).toBeGreaterThan(43_300);
+    expect(stub.taxes.map((t) => t.label)).not.toContain('NJ UI/WF/SWF');
+  });
+
+  it('withholds nothing for NJ disability in a year its employee rate was zero', async () => {
+    const [paycheck] = await call(api.getPaychecks({ employeeId: EMPLOYEE, year: 2024 }));
+    const stub = await call(api.getStub({ companyId: COMPANY, paycheckId: paycheck.id }));
+
+    expect(stub.taxes.map((t) => t.label)).not.toContain('NJ DI');
+    expect(stub.taxes.map((t) => t.label)).toContain('NJ FLI');
   });
 
   it('rejects an unparseable stub id rather than inventing a stub', async () => {

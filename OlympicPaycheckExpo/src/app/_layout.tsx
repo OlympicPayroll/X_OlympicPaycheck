@@ -43,6 +43,8 @@ export default function RootLayout() {
                 <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
                 <Stack.Screen name="checks" />
                 <Stack.Screen name="stub" />
+                <Stack.Screen name="tax-documents" />
+                <Stack.Screen name="w2" />
                 <Stack.Screen name="legal" />
               </Stack>
             </AutoLogoff>

@@ -1,7 +1,7 @@
 import Constants from 'expo-constants';
 
 import { mockApi } from '@/api/mock';
-import type { Paycheck, Session, StubDetail } from '@/api/types';
+import type { Paycheck, Session, StubDetail, TaxDocument, W2 } from '@/api/types';
 
 /**
  * The contract every payroll backend must satisfy.
@@ -53,6 +53,15 @@ export interface PayrollApi {
 
   /** Upload a new profile photo (base64, no data: prefix). */
   uploadPhoto(params: { employeeId: string; base64: string }): Promise<void>;
+
+  /**
+   * The employee's annual tax forms from this employer, newest first,
+   * including the current year's while it is still pending.
+   */
+  getTaxDocuments(params: { employeeId: string }): Promise<TaxDocument[]>;
+
+  /** One issued W-2, box by box. A pending form is NOT_FOUND. */
+  getW2(params: { employeeId: string; documentId: string }): Promise<W2>;
 }
 
 /**

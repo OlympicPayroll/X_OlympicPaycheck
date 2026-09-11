@@ -71,6 +71,12 @@ export default function HomeScreen() {
         <Animated.View entering={FadeInDown.duration(300).delay(140)} style={{ marginTop: Spacing.two }}>
           <FeatureRow illustration="receipt" title="Previous Paychecks" onPress={() => router.push('/history')} />
           <View style={[styles.divider, { backgroundColor: theme.line }]} />
+          <FeatureRow
+            illustration="taxes"
+            title="Annual Tax Documents"
+            onPress={() => router.push('/tax-documents')}
+          />
+          <View style={[styles.divider, { backgroundColor: theme.line }]} />
           <FeatureRow illustration="camera" title="Profile Photo" onPress={() => router.push('/profile')} />
           <View style={[styles.divider, { backgroundColor: theme.line }]} />
         </Animated.View>

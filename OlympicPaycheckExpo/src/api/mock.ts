@@ -1,4 +1,13 @@
-import { ApiError, type LineItem, type Paycheck, type Session, type StubDetail, type YtdTotals } from '@/api/types';
+import {
+  ApiError,
+  type LineItem,
+  type Paycheck,
+  type Session,
+  type StubDetail,
+  type TaxDocument,
+  type W2,
+  type YtdTotals,
+} from '@/api/types';
 
 /**
  * Fixture-backed implementation of `PayrollApi`, used until Olympic Payroll
@@ -167,48 +176,73 @@ type Figures = {
 };
 
 /**
+ * New Jersey's employee-paid payroll contributions, by year.
+ *
+ * Olympic Payroll's clients are largely New Jersey employers, and every NJ pay
+ * stub and W-2 carries three of these: unemployment and workforce funds
+ * (UI/WF/SWF), temporary disability (DI) and family leave (FLI). The rates and
+ * wage bases are the ones NJ Labor and Workforce Development published for each
+ * year. Each contribution stops once the year's wages pass its base, as it does
+ * on a real stub.
+ */
+const NJ_CONTRIBUTIONS: Record<number, { ui: number; uiBase: number; di: number; fli: number; diFliBase: number }> = {
+  2023: { ui: 0.00425, uiBase: 41_100, di: 0, fli: 0.0006, diFliBase: 156_800 },
+  2024: { ui: 0.00425, uiBase: 42_300, di: 0, fli: 0.0009, diFliBase: 161_400 },
+  2025: { ui: 0.00425, uiBase: 43_300, di: 0.0023, fli: 0.0033, diFliBase: 165_400 },
+  2026: { ui: 0.00425, uiBase: 44_800, di: 0.0019, fli: 0.0023, diFliBase: 171_100 },
+};
+
+/** The order a period's checks are paid in. */
+const KIND_ORDER: CheckKind[] = ['regular', 'bonus'];
+
+/** Wages paid on earlier checks in the same calendar year: what NJ's wage bases are measured against. */
+function wagesBefore(employeeId: string, iso: string, kind: CheckKind): number {
+  let total = 0;
+  for (const period of periodsFor(employeeId, Number(iso.slice(0, 4)))) {
+    for (const k of period.kinds) {
+      const earlier = period.iso < iso || (period.iso === iso && KIND_ORDER.indexOf(k) < KIND_ORDER.indexOf(kind));
+      if (earlier) total += sum(earningsFor(employeeId, period.iso, k));
+    }
+  }
+  return money(total);
+}
+
+/** A contribution on this check's wages, counting only wages up to the year's base. */
+function capped(rate: number, base: number, before: number, wages: number): number {
+  return money(rate * (Math.min(base, before + wages) - Math.min(base, before)));
+}
+
+const figuresCache = new Map<string, Figures>();
+
+/**
  * Everything one check pays and withholds.
  *
  * `net` is derived last, so gross − taxes − deductions is exact by construction.
  */
 function figuresFor(employeeId: string, iso: string, kind: CheckKind): Figures {
-  const r = seeded(`${employeeId}|${iso}|${kind}`);
+  const key = `${employeeId}|${iso}|${kind}`;
+  const cached = figuresCache.get(key);
+  if (cached) return cached;
 
-  const earnings: LineItem[] =
-    kind === 'bonus'
-      ? [{ label: 'Bonus', amount: money(250 + r * 500) }]
-      : [
-          {
-            label: 'Regular',
-            detail: `${REGULAR_HOURS.toFixed(2)} hrs · $${HOURLY_RATE.toFixed(2)}/hr`,
-            amount: money(REGULAR_HOURS * HOURLY_RATE),
-          },
-          ...(r > 0
-            ? (() => {
-                // Round the hours FIRST, then pay for the hours we printed.
-                // Deriving the amount from the unrounded value made the stub
-                // fail its own arithmetic: "0.34 hrs · $45.00/hr … $15.12".
-                const hours = round2(r * 6);
-                const rate = HOURLY_RATE * 1.5;
-                return [
-                  {
-                    label: 'Overtime',
-                    detail: `${hours.toFixed(2)} hrs · $${rate.toFixed(2)}/hr`,
-                    amount: money(hours * rate),
-                  },
-                ];
-              })()
-            : []),
-        ];
-
+  const earnings = earningsFor(employeeId, iso, kind);
   const gross = sum(earnings);
+  const nj = NJ_CONTRIBUTIONS[Number(iso.slice(0, 4))] ?? NJ_CONTRIBUTIONS[CURRENT_YEAR];
+  const before = wagesBefore(employeeId, iso, kind);
 
-  const taxes: LineItem[] = [
-    { label: 'Federal income', amount: money(gross * 0.1222) },
-    { label: 'Social Security', amount: money(gross * 0.062) },
-    { label: 'Medicare', amount: money(gross * 0.0145) },
-    { label: 'State income', amount: money(gross * 0.0485) },
-  ];
+  const taxes = (
+    [
+      { label: 'Federal income', amount: money(gross * 0.1222) },
+      { label: 'Social Security', amount: money(gross * 0.062) },
+      { label: 'Medicare', amount: money(gross * 0.0145) },
+      { label: 'State income', amount: money(gross * 0.0485) },
+      { label: 'NJ UI/WF/SWF', detail: 'Unemployment & workforce', amount: capped(nj.ui, nj.uiBase, before, gross) },
+      { label: 'NJ DI', detail: 'Disability insurance', amount: capped(nj.di, nj.diFliBase, before, gross) },
+      { label: 'NJ FLI', detail: 'Family leave insurance', amount: capped(nj.fli, nj.diFliBase, before, gross) },
+    ] as LineItem[]
+  ).filter(
+    // Nothing is withheld at a 0% rate (DI in 2023–24) or once wages pass a base.
+    (tax) => tax.amount > 0,
+  );
 
   // Benefits come out of the regular check only — a bonus run doesn't
   // re-charge the employee's health premium.
@@ -223,7 +257,7 @@ function figuresFor(employeeId: string, iso: string, kind: CheckKind): Figures {
   const taxTotal = sum(taxes);
   const deductionTotal = sum(deductions);
 
-  return {
+  const figures = {
     earnings,
     taxes,
     deductions,
@@ -232,6 +266,32 @@ function figuresFor(employeeId: string, iso: string, kind: CheckKind): Figures {
     deductionTotal,
     net: money(gross - taxTotal - deductionTotal),
   };
+  figuresCache.set(key, figures);
+  return figures;
+}
+
+/** What one check pays, before anything is withheld. */
+function earningsFor(employeeId: string, iso: string, kind: CheckKind): LineItem[] {
+  const r = seeded(`${employeeId}|${iso}|${kind}`);
+
+  if (kind === 'bonus') return [{ label: 'Bonus', amount: money(250 + r * 500) }];
+
+  const regular: LineItem = {
+    label: 'Regular',
+    detail: `${REGULAR_HOURS.toFixed(2)} hrs · $${HOURLY_RATE.toFixed(2)}/hr`,
+    amount: money(REGULAR_HOURS * HOURLY_RATE),
+  };
+  if (r <= 0) return [regular];
+
+  // Round the hours FIRST, then pay for the hours we printed. Deriving the
+  // amount from the unrounded value made the stub fail its own arithmetic:
+  // "0.34 hrs · $45.00/hr … $15.12".
+  const hours = round2(r * 6);
+  const rate = HOURLY_RATE * 1.5;
+  return [
+    regular,
+    { label: 'Overtime', detail: `${hours.toFixed(2)} hrs · $${rate.toFixed(2)}/hr`, amount: money(hours * rate) },
+  ];
 }
 
 /** Year-to-date totals across every check up to and including `iso`. */
@@ -368,6 +428,148 @@ function assertDeliveryId(sentId: string): void {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/* Annual tax documents                                                       */
+/* -------------------------------------------------------------------------- */
+
+type Employer = { name: string; ein: string; stateId: string; address: string[] };
+
+/**
+ * Employers as they print on a W-2. The EINs use prefixes the IRS does not
+ * issue (07 and 09), so they can never be a real employer's number. New
+ * Jersey's employer ID is the federal EIN followed by a three-digit suffix.
+ */
+const EMPLOYERS: Record<string, Employer> = {
+  'E-88214': {
+    name: 'Cascade Coffee Roasters',
+    ein: '07-3187654',
+    stateId: '073-187-654/000',
+    address: ['1200 Harbor Point Drive', 'Fairfield, NJ 07004'],
+  },
+  'E-90551': {
+    name: 'Northgate Catering Co.',
+    ein: '09-4471230',
+    stateId: '094-471-230/000',
+    address: ['310 Mill Pond Lane', 'Wayne, NJ 07470'],
+  },
+};
+
+/** For an employee id the fixtures don't know, such as one a test invents. */
+const OTHER_EMPLOYER: Employer = {
+  name: 'Sample Employer LLC',
+  ein: '07-0000001',
+  stateId: '070-000-001/000',
+  address: ['1 Sample Plaza', 'Newark, NJ 07102'],
+};
+
+/** The W-2 recipient as payroll holds them: fictional, like everything here. */
+const W2_EMPLOYEE: W2['employee'] = {
+  firstName: 'SARAH',
+  lastName: 'MITCHELL',
+  address: ['118 Linden Avenue, Apt 2B', 'Montclair, NJ 07042'],
+  ssnMasked: 'XXX-XX-4821',
+};
+
+function employerFor(employeeId: string): Employer {
+  return EMPLOYERS[employeeId] ?? OTHER_EMPLOYER;
+}
+
+/**
+ * When a year's W-2s are due to employees: January 31 of the following year,
+ * or the next business day when that falls on a weekend.
+ */
+function furnishBy(taxYear: number): string {
+  const due = new Date(taxYear + 1, 0, 31);
+  while (due.getDay() === 0 || due.getDay() === 6) due.setDate(due.getDate() + 1);
+  return `${MONTHS[due.getMonth()]} ${due.getDate()}, ${due.getFullYear()}`;
+}
+
+/** A year's W-2 is issued once the year has closed; the current year's is still to come. */
+function w2Issued(taxYear: number): boolean {
+  return taxYear < CURRENT_YEAR;
+}
+
+/** e.g. "W2-2025-E-88214". Screens treat these as opaque. */
+function w2Id(employeeId: string, taxYear: number): string {
+  return `W2-${taxYear}-${employeeId}`;
+}
+
+const W2_ID = /^W2-(\d{4})-(.+)$/;
+
+/** The lines matching a label, summed across a year's checks. */
+function yearTotal(checks: Figures[], lines: (f: Figures) => LineItem[], matches: (label: string) => boolean): number {
+  return money(checks.reduce((total, f) => total + sum(lines(f).filter((line) => matches(line.label))), 0));
+}
+
+/**
+ * A year's W-2, added up from the very stubs the app shows.
+ *
+ * How the boxes relate to the stubs:
+ *   • 401(k) deferrals come out of federal and New Jersey wages (boxes 1 and
+ *     16) but not out of Social Security or Medicare wages (boxes 3 and 5).
+ *   • Health insurance is taken after tax in these fixtures, so it moves no box.
+ *   • NJ's employee contributions go in box 14, labelled as NJ W-2s print them.
+ */
+function buildW2(employeeId: string, taxYear: number): W2 {
+  const checks = periodsFor(employeeId, taxYear).flatMap((period) =>
+    period.kinds.map((kind) => figuresFor(employeeId, period.iso, kind)),
+  );
+  const gross = money(checks.reduce((total, f) => total + f.gross, 0));
+  const withheld = (label: string) => yearTotal(checks, (f) => f.taxes, (l) => l === label);
+  const deferrals = yearTotal(checks, (f) => f.deductions, (l) => l.startsWith('401(k)'));
+  const employer = employerFor(employeeId);
+
+  return {
+    id: w2Id(employeeId, taxYear),
+    taxYear,
+    employee: { ...W2_EMPLOYEE, address: [...W2_EMPLOYEE.address] },
+    employer: { name: employer.name, ein: employer.ein, address: [...employer.address] },
+    controlNumber: `${taxYear}-${employeeId.replace(/\D/g, '')}`,
+    wages: money(gross - deferrals),
+    federalIncomeTax: withheld('Federal income'),
+    socialSecurityWages: gross,
+    socialSecurityTax: withheld('Social Security'),
+    medicareWages: gross,
+    medicareTax: withheld('Medicare'),
+    socialSecurityTips: 0,
+    allocatedTips: 0,
+    dependentCareBenefits: 0,
+    nonqualifiedPlans: 0,
+    box12: deferrals > 0 ? [{ code: 'D', amount: deferrals }] : [],
+    statutoryEmployee: false,
+    retirementPlan: deferrals > 0,
+    thirdPartySickPay: false,
+    box14: [
+      { label: 'UI/WF/SWF', amount: withheld('NJ UI/WF/SWF') },
+      { label: 'DI', amount: withheld('NJ DI') },
+      { label: 'FLI', amount: withheld('NJ FLI') },
+    ].filter((line) => line.amount > 0),
+    states: [
+      {
+        state: 'NJ',
+        employerStateId: employer.stateId,
+        wages: money(gross - deferrals),
+        incomeTax: withheld('State income'),
+      },
+    ],
+  };
+}
+
+/** One W-2 per payroll year, newest first, the current year's still pending. */
+function taxDocumentsFor(employeeId: string): TaxDocument[] {
+  const { name } = employerFor(employeeId);
+  return YEARS.map(
+    (taxYear): TaxDocument => ({
+      id: w2Id(employeeId, taxYear),
+      form: 'W-2',
+      taxYear,
+      employerName: name,
+      status: w2Issued(taxYear) ? 'available' : 'pending',
+      date: furnishBy(taxYear),
+    }),
+  );
+}
+
 const photos = new Map<string, string>();
 
 /**
@@ -381,6 +583,7 @@ export function resetFixtures(): void {
   readDeliveries.clear();
   photos.clear();
   periodCache.clear();
+  figuresCache.clear();
 }
 
 export const mockApi = {
@@ -473,6 +676,22 @@ export const mockApi = {
   async emailStub({ sentId }: { sentId: string }): Promise<void> {
     await latency();
     assertDeliveryId(sentId);
+  },
+
+  async getTaxDocuments({ employeeId }: { employeeId: string }): Promise<TaxDocument[]> {
+    await latency();
+    return taxDocumentsFor(employeeId);
+  },
+
+  async getW2({ employeeId, documentId }: { employeeId: string; documentId: string }): Promise<W2> {
+    await latency();
+    const match = W2_ID.exec(documentId);
+    const taxYear = Number(match?.[1]);
+    // Another employee's form, or one not yet issued, simply isn't there.
+    if (!match || match[2] !== employeeId || !YEARS.includes(taxYear) || !w2Issued(taxYear)) {
+      throw new ApiError('NOT_FOUND', 'No W-2 on file');
+    }
+    return buildW2(employeeId, taxYear);
   },
 
   async getPhoto({ employeeId }: { employeeId: string }): Promise<string | null> {

@@ -1,9 +1,12 @@
 import { act, fireEvent, waitFor } from '@testing-library/react-native';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
 import { Alert, type AlertButton } from 'react-native';
 
 import { mockApi } from '@/api/mock';
 import { ApiError } from '@/api/types';
 import StubScreen from '@/app/stub';
+import { usd } from '@/lib/format';
 
 import { renderSignedIn } from './test-utils';
 
@@ -204,6 +207,96 @@ describe('emailing a copy', () => {
     await waitFor(() => expect(titles()).toContain('Pay stub sent'));
     await emailFinished(app);
     expect(email).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('downloading a PDF', () => {
+  /** Wait for the export to finish: the action re-enables itself at the very end. */
+  async function downloadFinished(app: Awaited<ReturnType<typeof openStub>>) {
+    await waitFor(() =>
+      expect(app.getByLabelText('Download PDF').props.accessibilityState).toMatchObject({ disabled: false }),
+    );
+  }
+
+  /** Unlike email, saving a copy needs nothing from the payroll service. */
+  it('is offered even when there is no delivery to email', async () => {
+    const app = await openStub({ id: CHECK_ID });
+    await app.findByText('Earnings');
+
+    expect(app.getByLabelText('Download PDF')).toBeTruthy();
+    expect(app.queryByLabelText('Email a copy')).toBeNull();
+  });
+
+  it('names the PDF for its pay date and hands it to the share sheet', async () => {
+    const app = await openStub({ id: CHECK_ID, sentId: SENT_ID, date: '2026-07-18' });
+
+    await fireEvent.press(await app.findByLabelText('Download PDF'));
+
+    await waitFor(() => expect(Sharing.shareAsync).toHaveBeenCalledTimes(1));
+    const [uri, options] = (Sharing.shareAsync as jest.Mock).mock.calls[0];
+    expect(uri).toMatch(/\/Pay-Stub-2026-07-18\.pdf$/);
+    expect(options).toMatchObject({ mimeType: 'application/pdf', UTI: 'com.adobe.pdf' });
+    await downloadFinished(app);
+  });
+
+  it('prints the same figures the screen shows', async () => {
+    const stub = await mockApi.getStub({ companyId: 'CA-1041', paycheckId: CHECK_ID });
+    const app = await openStub({ id: CHECK_ID });
+
+    await fireEvent.press(await app.findByLabelText('Download PDF'));
+
+    await waitFor(() => expect(Print.printToFileAsync).toHaveBeenCalled());
+    const { html } = (Print.printToFileAsync as jest.Mock).mock.calls[0][0];
+    expect(html).toContain('Earnings statement');
+    expect(html).toContain('Cascade Coffee Roasters');
+    expect(html).toContain('Sarah Mitchell');
+    for (const figure of [stub.net, stub.gross, stub.taxTotal, stub.ytd.net]) {
+      expect(html).toContain(usd(figure));
+    }
+    expect(html).toContain('data:image/png;base64,');
+    await downloadFinished(app);
+  });
+
+  /** A PDF can be emailed and filed long after it leaves the app, so it carries its own warning. */
+  it('marks a PDF made from sample data', async () => {
+    const app = await openStub({ id: CHECK_ID });
+
+    await fireEvent.press(await app.findByLabelText('Download PDF'));
+
+    await waitFor(() => expect(Print.printToFileAsync).toHaveBeenCalled());
+    expect((Print.printToFileAsync as jest.Mock).mock.calls[0][0].html).toContain('SAMPLE DATA');
+    await downloadFinished(app);
+  });
+
+  it('says so when the PDF cannot be made', async () => {
+    (Print.printToFileAsync as jest.Mock).mockRejectedValueOnce(new Error('print engine failed'));
+    const app = await openStub({ id: CHECK_ID });
+
+    await fireEvent.press(await app.findByLabelText('Download PDF'));
+
+    await waitFor(() => expect(titles()).toContain('We couldn’t create the PDF'));
+    expect(Sharing.shareAsync).not.toHaveBeenCalled();
+    await downloadFinished(app);
+  });
+
+  it('ignores repeat taps while a PDF is still being made', async () => {
+    let finish!: () => void;
+    (Sharing.shareAsync as jest.Mock).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const app = await openStub({ id: CHECK_ID });
+    const button = await app.findByLabelText('Download PDF');
+
+    await fireEvent.press(button);
+    await fireEvent.press(button);
+    await waitFor(() => expect(Sharing.shareAsync).toHaveBeenCalledTimes(1));
+
+    await act(async () => finish());
+    await downloadFinished(app);
+    expect(Print.printToFileAsync).toHaveBeenCalledTimes(1);
   });
 });
 

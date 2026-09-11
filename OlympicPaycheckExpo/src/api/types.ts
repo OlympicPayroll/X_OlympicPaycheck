@@ -91,6 +91,109 @@ export type StubDetail = {
 };
 
 /**
+ * An annual tax form the employer has issued, or will issue, to the employee.
+ *
+ * Only W-2s exist today; `form` leaves room for a corrected W-2c or a 1099
+ * without reshaping the list.
+ */
+export type TaxDocument = {
+  /** Opaque id, used to fetch the form itself. */
+  id: string;
+  form: 'W-2';
+  taxYear: number;
+  employerName: string;
+  /**
+   * A year's W-2 stays `pending` until the employer furnishes it. That is due
+   * by January 31 of the following year (the next business day when it falls
+   * on a weekend), so the current year's form is always still to come.
+   */
+  status: 'available' | 'pending';
+  /** When it was issued, or the date it is due by, e.g. "Feb 2, 2026". */
+  date: string;
+};
+
+/** An amount reported under a code, e.g. box 12 "D" (401(k) deferrals). */
+export type CodedAmount = { code: string; amount: number };
+
+/** A labelled amount, e.g. box 14 "FLI". The labels are the employer's own. */
+export type LabelledAmount = { label: string; amount: number };
+
+/** One state line of a W-2 (boxes 15–20). */
+export type W2State = {
+  /** Two-letter code, e.g. "NJ". */
+  state: string;
+  employerStateId: string;
+  wages: number;
+  incomeTax: number;
+  /** Boxes 18–20, only where a locality taxes wages. */
+  localWages?: number;
+  localIncomeTax?: number;
+  locality?: string;
+};
+
+/**
+ * Form W-2, Wage and Tax Statement: the employee's copy.
+ *
+ * Fields follow the boxes of the printed form, so the screen and the PDF can be
+ * checked against a paper W-2 box by box. Amounts are dollars.
+ */
+export type W2 = {
+  id: string;
+  taxYear: number;
+  employee: {
+    /** Box e. */
+    firstName: string;
+    lastName: string;
+    /** Box f, one entry per line. */
+    address: string[];
+    /**
+     * Box a, truncated to the last four digits ("XXX-XX-4821"), as the IRS
+     * allows on employee copies. The app never receives the full number.
+     */
+    ssnMasked: string;
+  };
+  employer: {
+    /** Box c. */
+    name: string;
+    address: string[];
+    /** Box b. */
+    ein: string;
+  };
+  /** Box d. */
+  controlNumber?: string;
+  /** Box 1. */
+  wages: number;
+  /** Box 2. */
+  federalIncomeTax: number;
+  /** Box 3. */
+  socialSecurityWages: number;
+  /** Box 4. */
+  socialSecurityTax: number;
+  /** Box 5. */
+  medicareWages: number;
+  /** Box 6. */
+  medicareTax: number;
+  /** Box 7. */
+  socialSecurityTips: number;
+  /** Box 8. */
+  allocatedTips: number;
+  /** Box 10. */
+  dependentCareBenefits: number;
+  /** Box 11. */
+  nonqualifiedPlans: number;
+  /** Box 12: up to four coded amounts per form. */
+  box12: CodedAmount[];
+  /** Box 13. */
+  statutoryEmployee: boolean;
+  retirementPlan: boolean;
+  thirdPartySickPay: boolean;
+  /** Box 14 "Other". New Jersey employers report the employee's state contributions here. */
+  box14: LabelledAmount[];
+  /** Boxes 15–20. */
+  states: W2State[];
+};
+
+/**
  * Failure modes the UI needs to distinguish. The first three mirror real
  * responses from the legacy service (IsValidEmail / IsValidSSN / EmpCount).
  */

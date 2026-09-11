@@ -74,6 +74,66 @@ jest.mock('expo-constants', () => ({
   ExecutionEnvironment: { Bare: 'bare', Standalone: 'standalone', StoreClient: 'storeClient' },
 }));
 
+// --- PDF export -------------------------------------------------------------
+// The OS print engine, share sheet and file system. The HTML handed to the
+// print engine is the document itself, so that is what tests assert on.
+jest.mock('expo-print', () => ({
+  printToFileAsync: jest.fn(),
+}));
+
+jest.mock('expo-sharing', () => ({
+  isAvailableAsync: jest.fn(),
+  shareAsync: jest.fn(),
+}));
+
+// A pretend disk, so `exists`, `move` and `delete` behave like real files.
+jest.mock('expo-file-system', () => {
+  const disk = new Set();
+  const join = (parts) =>
+    parts
+      .map((part) => (typeof part === 'string' ? part : part.uri))
+      .join('/')
+      .replace(/([^:/])\/{2,}/g, '$1/');
+
+  class File {
+    constructor(...parts) {
+      this.uri = join(parts);
+    }
+    get exists() {
+      return disk.has(this.uri);
+    }
+    delete() {
+      disk.delete(this.uri);
+    }
+    move(destination) {
+      disk.delete(this.uri);
+      this.uri = destination.uri;
+      disk.add(this.uri);
+    }
+    write() {
+      disk.add(this.uri);
+    }
+    async bytes() {
+      return new Uint8Array([37, 80, 68, 70]);
+    }
+    async base64() {
+      return 'iVBORw0KGgo=';
+    }
+  }
+
+  class Directory {
+    constructor(...parts) {
+      this.uri = join(parts);
+    }
+    createFile(name) {
+      return new File(this, name);
+    }
+  }
+  Directory.pickDirectoryAsync = jest.fn();
+
+  return { __disk: disk, File, Directory, Paths: { cache: new Directory('file:///cache') } };
+});
+
 // --- Per-test isolation -----------------------------------------------------
 const SecureStore = require('expo-secure-store');
 const LocalAuthentication = require('expo-local-authentication');
@@ -109,4 +169,21 @@ beforeEach(() => {
   LocalAuthentication.getEnrolledLevelAsync.mockReset().mockResolvedValue(3);
   LocalAuthentication.supportedAuthenticationTypesAsync.mockReset().mockResolvedValue([2]);
   LocalAuthentication.authenticateAsync.mockReset().mockResolvedValue({ success: true });
+
+  // PDF export: a phone that can render, share and save.
+  const Print = require('expo-print');
+  const Sharing = require('expo-sharing');
+  const FileSystem = require('expo-file-system');
+  FileSystem.__disk.clear();
+  Print.printToFileAsync.mockReset().mockResolvedValue({ uri: 'file:///cache/Print/5F2C1A.pdf', numberOfPages: 1 });
+  Sharing.isAvailableAsync.mockReset().mockResolvedValue(true);
+  Sharing.shareAsync.mockReset().mockResolvedValue(undefined);
+  FileSystem.Directory.pickDirectoryAsync
+    .mockReset()
+    .mockResolvedValue(new FileSystem.Directory('content://downloads'));
+  // Bundled images can't be downloaded in a test runner, so the logo arrives
+  // as if it were already on disk.
+  jest.spyOn(require('expo-asset').Asset, 'fromModule').mockReturnValue({
+    downloadAsync: async () => ({ localUri: 'file:///cache/logo-torch.png' }),
+  });
 });

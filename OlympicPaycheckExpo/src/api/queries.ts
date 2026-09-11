@@ -18,6 +18,8 @@ export const queryKeys = {
   checksForDate: (employeeId: string, payDateIso: string) => ['checksForDate', employeeId, payDateIso] as const,
   combinedStub: (employeeId: string, payDateIso: string) => ['combinedStub', employeeId, payDateIso] as const,
   photo: (employeeId: string) => ['photo', employeeId] as const,
+  taxDocuments: (employeeId: string) => ['taxDocuments', employeeId] as const,
+  w2: (employeeId: string, documentId: string) => ['w2', employeeId, documentId] as const,
 };
 
 /** The employee id scoped to the currently selected company. */
@@ -113,6 +115,24 @@ export function useMarkPaycheckRead() {
 export function useEmailStub() {
   return useMutation({
     mutationFn: (params: { sentId: string }) => getApi().emailStub(params),
+  });
+}
+
+export function useTaxDocuments() {
+  const employeeId = useEmployeeId();
+  return useQuery({
+    queryKey: queryKeys.taxDocuments(employeeId ?? ''),
+    queryFn: () => getApi().getTaxDocuments({ employeeId: employeeId! }),
+    enabled: !!employeeId,
+  });
+}
+
+export function useW2(documentId: string | undefined) {
+  const employeeId = useEmployeeId();
+  return useQuery({
+    queryKey: queryKeys.w2(employeeId ?? '', documentId ?? ''),
+    queryFn: () => getApi().getW2({ employeeId: employeeId!, documentId: documentId! }),
+    enabled: !!employeeId && !!documentId,
   });
 }
 

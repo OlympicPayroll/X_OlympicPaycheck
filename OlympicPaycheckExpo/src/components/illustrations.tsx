@@ -7,7 +7,7 @@ import { useTheme } from '@/hooks/use-theme';
  * Access" app: a soft blue blob, a rounded blue outline icon, and a couple of
  * sparkle accents. Used for the feature cards on Home.
  */
-export type IllustrationName = 'wallet' | 'receipt' | 'camera';
+export type IllustrationName = 'wallet' | 'receipt' | 'camera' | 'taxes';
 
 const SPARKLES = [
   { cx: 40, cy: 9, r: 1.6 },
@@ -41,6 +41,16 @@ export function Illustration({ name, size = 46 }: { name: IllustrationName; size
             strokeLinejoin="round"
           />
           <Path d="M20 20h8M20 24h8M20 28h5" stroke={line} strokeWidth={1.8} strokeLinecap="round" />
+        </>
+      )}
+
+      {name === 'taxes' && (
+        <>
+          <Path d="M15 12h11l5 5v18H15V12Z" stroke={line} strokeWidth={1.8} strokeLinejoin="round" />
+          <Path d="M26 12v5h5" stroke={line} strokeWidth={1.8} strokeLinejoin="round" />
+          <Path d="M19 21h7M19 25h8M19 29h4" stroke={line} strokeWidth={1.8} strokeLinecap="round" />
+          <Circle cx="31" cy="33" r="4.6" fill={theme.sketchTint} stroke={line} strokeWidth={1.8} />
+          <Path d="M29.1 33.1l1.3 1.3 2.5-2.6" stroke={line} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" />
         </>
       )}
 

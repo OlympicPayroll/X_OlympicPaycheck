@@ -55,8 +55,8 @@ the app renders real payroll correctly without real responses.
 
 ## 3. Operations the app needs
 
-Eleven operations. Each maps one-to-one onto a method the legacy SOAP service
-already exposed, which is our evidence that the payroll system holds this data —
+Thirteen operations. The first eleven each map one-to-one onto a method the
+legacy SOAP service already exposed, which is our evidence that the payroll system holds this data —
 the column is there to help you locate the equivalent in the new system.
 
 | # | App operation | Legacy SOAP method | Purpose |
@@ -72,10 +72,14 @@ the column is there to help you locate the equivalent in the new system.
 | 9 | `emailStub` | `SendEmail` | Email a stub to the address on record |
 | 10 | `getPhoto` | `GetEmployeePhoto` | Profile photo |
 | 11 | `uploadPhoto` | `InsertBase64Photo` | Replace profile photo |
+| 12 | `getTaxDocuments` | *(none, new feature)* | The employee's W-2s by year, and whether this year's is issued yet |
+| 13 | `getW2` | *(none, new feature)* | One W-2, box by box (see §5, Annual tax documents) |
 
 Operations 1–5 are **required for a usable app**. 6–7 are required for correctness
 for any employee who has ever received more than one check in a period. 8–11 are
-feature parity with the current app and can follow.
+feature parity with the current app and can follow. 12–13 are new: the legacy app
+had no tax documents, so there is no SOAP method to point to, but Olympic Employee
+Access already offers employees their annual tax documents, so the data exists.
 
 ---
 
@@ -236,6 +240,65 @@ Notes:
 - `ytd` is year-to-date **through and including this check**, across all of that
   employee's checks in that year.
 
+### Annual tax documents (W-2)
+
+`getTaxDocuments` lists one entry per tax year, for the employer being viewed:
+
+```json
+[
+  { "id": "W2-2026-E-88214", "form": "W-2", "taxYear": 2026,
+    "employerName": "Cascade Coffee Roasters", "status": "pending", "date": "Feb 1, 2027" },
+  { "id": "W2-2025-E-88214", "form": "W-2", "taxYear": 2025,
+    "employerName": "Cascade Coffee Roasters", "status": "available", "date": "Feb 2, 2026" }
+]
+```
+
+`getW2` returns one issued form. These are the fixture backend's figures, summed
+from the same pay stubs the app shows:
+
+```json
+{
+  "id": "W2-2025-E-88214",
+  "taxYear": 2025,
+  "employee": { "firstName": "SARAH", "lastName": "MITCHELL",
+                "address": ["118 Linden Avenue, Apt 2B", "Montclair, NJ 07042"],
+                "ssnMasked": "XXX-XX-4821" },
+  "employer": { "name": "Cascade Coffee Roasters", "ein": "07-3187654",
+                "address": ["1200 Harbor Point Drive", "Fairfield, NJ 07004"] },
+  "controlNumber": "2025-88214",
+  "wages": 64488.41,
+  "federalIncomeTax": 8201.92,
+  "socialSecurityWages": 67118.65,
+  "socialSecurityTax": 4161.36,
+  "medicareWages": 67118.65,
+  "medicareTax": 973.22,
+  "socialSecurityTips": 0, "allocatedTips": 0, "dependentCareBenefits": 0, "nonqualifiedPlans": 0,
+  "box12": [ { "code": "D", "amount": 2630.24 } ],
+  "statutoryEmployee": false, "retirementPlan": true, "thirdPartySickPay": false,
+  "box14": [ { "label": "UI/WF/SWF", "amount": 184.02 },
+             { "label": "DI", "amount": 154.39 },
+             { "label": "FLI", "amount": 221.50 } ],
+  "states": [ { "state": "NJ", "employerStateId": "073-187-654/000",
+                "wages": 64488.41, "incomeTax": 3255.27 } ]
+}
+```
+
+Notes:
+
+- **Fields follow the boxes of the printed form** (box 1 `wages`, box 2
+  `federalIncomeTax` and so on), so each can be checked against a paper W-2.
+- `box12` is up to four `{ code, amount }` pairs. `box14` labels are the
+  employer's own; New Jersey employers print `UI/WF/SWF`, `DI` and `FLI` there.
+  `states` holds one entry per state (boxes 15–20).
+- **Only a truncated SSN.** `ssnMasked` must never carry the full number.
+- `status` is `pending` until the form is furnished (by January 31 of the
+  following year, or the next business day), so the app can say when to expect it.
+- **If the payroll system already renders the official W-2 PDF, serving that is
+  better than the box values alone.** Today the app draws the employee copies
+  (B, C and 2) itself from these values, which works but is a second rendering of
+  a legal document. With the official PDF, the app would show and share the exact
+  form the employer issued.
+
 ---
 
 ## 6. Pay periods with more than one check
@@ -274,6 +337,20 @@ them individually, which is a functional regression against the current app.
 12. Will `sentId` be rejected when a pay-period id is sent in its place, and is
     it scoped per employee? (§5)
 13. Is `method` (direct deposit vs. paper check) available per check?
+14. **W-2s:** does the payroll system already produce the W-2 PDFs that Olympic
+    Employee Access shows? If so, can the API serve that PDF, alongside the box
+    values or instead of them? (§5)
+15. How many years of W-2s are kept, and are corrected forms (W-2c) served the
+    same way?
+16. Can the W-2 carry a truncated SSN (`XXX-XX-1234`)? The IRS allows this on
+    employee copies, and the app must never receive the full number.
+17. Is the employee's consent to receive W-2s electronically already recorded
+    (for example through Paperless Payroll sign-up)? The IRS requires it before a
+    W-2 is furnished electronically, and the app should only offer W-2s to
+    employees who have given it.
+18. From the 2026 form, box 14 splits into 14a and 14b and box 12 gains codes TA,
+    TP and TT (tips and qualified overtime). Will the API send those as they
+    print? For 2025, is qualified overtime being reported in box 14?
 
 ---
 
@@ -321,12 +398,12 @@ returned from `selectApi()`.
 ## 10. What happens on our side once we have this
 
 The app is built against a single interface (`PayrollApi`, in
-`OlympicPaycheckExpo/src/api/client.ts`) that all 15 screens depend on. No screen
+`OlympicPaycheckExpo/src/api/client.ts`) that every screen depends on. No screen
 knows anything about the transport. Wiring up a real backend is one new adapter
 file plus one changed line — the fixture backend is swapped out and the app is
 live on real data.
 
-The 176-test suite includes contract tests that run against whatever the adapter
+The test suite includes contract tests that run against whatever the adapter
 returns, so the same tests that pass on fixtures today become the acceptance
 tests for your API.
 

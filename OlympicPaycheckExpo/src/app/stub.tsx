@@ -3,17 +3,22 @@ import { ReactNode, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
+import { IS_MOCK_BACKEND } from '@/api/client';
 import { useCombinedStub, useEmailStub, useMarkPaycheckRead, useStub } from '@/api/queries';
 import { messageFor, type LineItem } from '@/api/types';
 import { FamilyHeader, PageTitle, TitleIconButton } from '@/components/app-bar';
-import { Mail } from '@/components/icons';
+import { Download, Mail } from '@/components/icons';
 import { CardSkeleton, ErrorState, ListSkeleton } from '@/components/states';
 import { Card } from '@/components/ui';
 import { Radius, Spacing, Type } from '@/constants/theme';
+import { usePdfExport } from '@/hooks/use-pdf-export';
 import { useTheme } from '@/hooks/use-theme';
 import { useDialog } from '@/lib/dialog';
-import { usd } from '@/lib/format';
+import { payStubHtml } from '@/lib/documents';
+import { displayName, usd } from '@/lib/format';
+import { logoDataUri, pdfFileName } from '@/lib/pdf';
 import type { StubParams } from '@/lib/routes';
+import { useSession } from '@/lib/session';
 
 export default function StubScreen() {
   const theme = useTheme();
@@ -96,6 +101,30 @@ export default function StubScreen() {
     }
   };
 
+  const { session, company } = useSession();
+  const { exporting, exportPdf } = usePdfExport();
+
+  /**
+   * Save or share the stub as a PDF earnings statement. Unlike email, this
+   * needs nothing from the payroll service: any stub on screen can be kept.
+   */
+  const onDownload = () => {
+    if (!stub) return;
+    void exportPdf({
+      html: async () =>
+        payStubHtml({
+          stub,
+          employeeName: session ? displayName(session.employee.fullName) : '',
+          employerName: company?.name ?? '',
+          combined: isCombined,
+          logo: await logoDataUri(),
+          sample: IS_MOCK_BACKEND,
+        }),
+      fileName: pdfFileName('Pay-Stub', params.date ?? stub.payDate, isCombined ? 'combined' : ''),
+      title: 'Pay stub PDF',
+    });
+  };
+
   /**
    * Only claim a deposit when the money was actually deposited. Bonus runs are
    * often paper checks, and "NET PAY DEPOSITED" on one is simply untrue.
@@ -112,14 +141,21 @@ export default function StubScreen() {
           title="Pay Stub"
           onBack={() => router.back()}
           right={
-            // Hidden until there is a delivery to re-send and a stub to send:
-            // offering the action and then failing is worse than not offering.
-            canEmail ? (
-              // The interaction outlives the tap (dialogs, the send, retries),
-              // so the button starts it without waiting on it.
-              <TitleIconButton label="Email a copy" onPress={() => void onEmail()} disabled={emailing}>
-                <Mail color={emailing ? theme.faint : theme.brand} size={18} />
-              </TitleIconButton>
+            stub ? (
+              <View style={styles.actions}>
+                <TitleIconButton label="Download PDF" onPress={onDownload} disabled={exporting}>
+                  <Download color={exporting ? theme.faint : theme.brand} size={18} />
+                </TitleIconButton>
+                {/* Hidden until there is a delivery to re-send: offering the
+                    action and then failing is worse than not offering it. The
+                    interaction outlives the tap (dialogs, the send, retries),
+                    so the button starts it without waiting on it. */}
+                {canEmail && (
+                  <TitleIconButton label="Email a copy" onPress={() => void onEmail()} disabled={emailing}>
+                    <Mail color={emailing ? theme.faint : theme.brand} size={18} />
+                  </TitleIconButton>
+                )}
+              </View>
             ) : undefined
           }
         />
@@ -291,6 +327,7 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
 
 const styles = StyleSheet.create({
   content: { paddingBottom: Spacing.six },
+  actions: { flexDirection: 'row', gap: Spacing.two },
   pad: { paddingHorizontal: Spacing.three },
   hero: { alignItems: 'center', paddingVertical: Spacing.four, marginTop: Spacing.two },
   heroNet: { fontSize: 38, fontWeight: '700', letterSpacing: -0.8, marginTop: 6, fontVariant: ['tabular-nums'] },
