@@ -12,6 +12,7 @@ import TaxDocumentsScreen from '@/app/tax-documents';
 import W2Screen from '@/app/w2';
 import { usd } from '@/lib/format';
 
+import PdfViewer from '../modules/pdf-viewer';
 import { renderSignedIn } from './test-utils';
 
 /**
@@ -28,6 +29,7 @@ const { __setParams } = jest.requireMock('expo-router') as { __setParams: (p: ob
 const printToFile = Print.printToFileAsync as jest.Mock;
 const share = Sharing.shareAsync as jest.Mock;
 const pickDirectory = (Directory as unknown as { pickDirectoryAsync: jest.Mock }).pickDirectoryAsync;
+const openInViewer = PdfViewer!.open as jest.Mock;
 
 const EMPLOYEE = 'E-88214';
 
@@ -265,7 +267,7 @@ describe('downloading a W-2 as a PDF', () => {
 
   describe('on Android', () => {
     /** Android's share sheet has no dependable save target, so it also offers a folder. */
-    it('saves into a folder the employee picks', async () => {
+    it('saves into a folder the employee picks, then offers to open it', async () => {
       const w2 = await issuedW2();
       const app = await openW2(w2.id);
       setPlatform('android');
@@ -273,11 +275,49 @@ describe('downloading a W-2 as a PDF', () => {
       await fireEvent.press(app.getByLabelText('Download PDF'));
       await fireEvent.press(await app.findByText('Save to phone'));
 
-      expect(await app.findByText('PDF saved')).toBeTruthy();
+      expect(await app.findByText('PDF saved to your phone')).toBeTruthy();
       expect(pickDirectory).toHaveBeenCalledTimes(1);
       expect(share).not.toHaveBeenCalled();
+      await downloadFinished(app);
 
-      await fireEvent.press(app.getByText('Done'));
+      await fireEvent.press(app.getByText('Open'));
+
+      expect(openInViewer).toHaveBeenCalledWith('content://downloads/W-2-2025-Cascade-Coffee-Roasters.pdf');
+      expect(app.queryByText('PDF saved to your phone')).toBeNull();
+    });
+
+    it('explains when the phone has no app that can open a PDF', async () => {
+      // What the app's Android module reports when nothing installed can show a PDF.
+      openInViewer.mockRejectedValueOnce(
+        Object.assign(new Error('No app on this phone can open a PDF'), { code: 'ERR_NO_PDF_VIEWER' }),
+      );
+      const w2 = await issuedW2();
+      const app = await openW2(w2.id);
+      setPlatform('android');
+
+      await fireEvent.press(app.getByLabelText('Download PDF'));
+      await fireEvent.press(await app.findByText('Save to phone'));
+      await fireEvent.press(await app.findByText('Open'));
+
+      expect(await app.findByText('No app to open PDFs')).toBeTruthy();
+      await fireEvent.press(app.getByText('OK'));
+      await downloadFinished(app);
+    });
+
+    /** For example a storage provider refusing to hand the saved file over. */
+    it('does not blame the phone’s apps when the viewer fails to start for another reason', async () => {
+      openInViewer.mockRejectedValueOnce(new Error('Permission Denial: opening provider'));
+      const w2 = await issuedW2();
+      const app = await openW2(w2.id);
+      setPlatform('android');
+
+      await fireEvent.press(app.getByLabelText('Download PDF'));
+      await fireEvent.press(await app.findByText('Save to phone'));
+      await fireEvent.press(await app.findByText('Open'));
+
+      expect(await app.findByText('We couldn’t open the PDF')).toBeTruthy();
+      expect(app.queryByText('No app to open PDFs')).toBeNull();
+      await fireEvent.press(app.getByText('OK'));
       await downloadFinished(app);
     });
 
@@ -305,7 +345,7 @@ describe('downloading a W-2 as a PDF', () => {
 
       await downloadFinished(app);
       expect(pickDirectory).toHaveBeenCalledTimes(1);
-      expect(app.queryByText('PDF saved')).toBeNull();
+      expect(app.queryByText('PDF saved to your phone')).toBeNull();
       expect(app.queryByText('We couldn’t create the PDF')).toBeNull();
     });
   });

@@ -6,6 +6,7 @@ import { SafeAreaProvider, type Metrics } from 'react-native-safe-area-context';
 import type { Company, Session } from '@/api/types';
 import { DialogProvider } from '@/lib/dialog';
 import { SessionProvider, useSession } from '@/lib/session';
+import { SnackbarProvider } from '@/lib/snackbar';
 
 /**
  * Deliver cache notifications synchronously.
@@ -69,7 +70,9 @@ export function AppProviders({ children }: { children: ReactNode }) {
     <SafeAreaProvider initialMetrics={metrics}>
       <QueryClientProvider client={client}>
         <SessionProvider>
-          <DialogProvider>{children}</DialogProvider>
+          <DialogProvider>
+            <SnackbarProvider>{children}</SnackbarProvider>
+          </DialogProvider>
         </SessionProvider>
       </QueryClientProvider>
     </SafeAreaProvider>

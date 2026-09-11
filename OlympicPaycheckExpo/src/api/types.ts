@@ -202,6 +202,8 @@ export type ApiErrorCode =
   | 'INVALID_SSN'
   | 'MULTIPLE_EMPLOYEES'
   | 'NOT_FOUND'
+  /** The payroll service no longer accepts this sign-in; the employee must sign in again. */
+  | 'SESSION_EXPIRED'
   | 'NETWORK'
   | 'SERVER'
   | 'UNKNOWN';
@@ -231,6 +233,8 @@ export function messageFor(error: unknown): string {
         return `This email is used by ${error.count ?? 'several'} employees. Please call Olympic Payroll.`;
       case 'NOT_FOUND':
         return 'We couldn’t find that pay stub.';
+      case 'SESSION_EXPIRED':
+        return 'Your sign-in has expired. Please sign in again.';
       case 'NETWORK':
         return 'No internet connection. Check your network and try again.';
       default:

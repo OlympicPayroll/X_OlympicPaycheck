@@ -8,6 +8,8 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AutoLogoff } from '@/lib/auto-logoff';
 import { DialogProvider } from '@/lib/dialog';
 import { SessionProvider } from '@/lib/session';
+import { SessionExpiry } from '@/lib/session-expiry';
+import { SnackbarProvider } from '@/lib/snackbar';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -34,20 +36,23 @@ export default function RootLayout() {
       <QueryClientProvider client={queryClient}>
         <SessionProvider>
           <DialogProvider>
-            <AutoLogoff>
-              <StatusBar style="auto" />
-              <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
-                <Stack.Screen name="index" options={{ animation: 'fade' }} />
-                <Stack.Screen name="unlock" options={{ animation: 'fade' }} />
-                <Stack.Screen name="companies" />
-                <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
-                <Stack.Screen name="checks" />
-                <Stack.Screen name="stub" />
-                <Stack.Screen name="tax-documents" />
-                <Stack.Screen name="w2" />
-                <Stack.Screen name="legal" />
-              </Stack>
-            </AutoLogoff>
+            <SnackbarProvider>
+              <SessionExpiry />
+              <AutoLogoff>
+                <StatusBar style="auto" />
+                <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
+                  <Stack.Screen name="index" options={{ animation: 'fade' }} />
+                  <Stack.Screen name="unlock" options={{ animation: 'fade' }} />
+                  <Stack.Screen name="companies" />
+                  <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
+                  <Stack.Screen name="checks" />
+                  <Stack.Screen name="stub" />
+                  <Stack.Screen name="tax-documents" />
+                  <Stack.Screen name="w2" />
+                  <Stack.Screen name="legal" />
+                </Stack>
+              </AutoLogoff>
+            </SnackbarProvider>
           </DialogProvider>
         </SessionProvider>
       </QueryClientProvider>

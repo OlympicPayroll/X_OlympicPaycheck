@@ -1,5 +1,6 @@
 import { createContext, ReactNode, useCallback, useContext, useMemo, useState } from 'react';
 
+import { getApi } from '@/api/client';
 import type { Company, Session } from '@/api/types';
 
 /**
@@ -37,6 +38,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const endSession = useCallback(() => {
+    // Tell the payroll service too, so the sign-in ends there as well as here.
+    // Signing out on the phone never waits on the network for it.
+    void getApi()
+      .signOut()
+      .catch(() => {});
     setSession(null);
     setCompany(null);
   }, []);

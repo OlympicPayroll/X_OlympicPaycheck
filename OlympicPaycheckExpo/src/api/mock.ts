@@ -613,6 +613,9 @@ export const mockApi = {
     };
   },
 
+  /** Fixtures keep no sign-in to end. */
+  async signOut(): Promise<void> {},
+
   async getLatestPaycheck({ employeeId }: { employeeId: string }): Promise<Paycheck> {
     await latency();
     const [latest] = periodsFor(employeeId, CURRENT_YEAR);

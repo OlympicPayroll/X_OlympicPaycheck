@@ -146,7 +146,7 @@ export function payStubHtml({ stub, employeeName, employerName, combined, logo, 
     <tr class="total"><td>Net pay</td><td class="num">${esc(usd(stub.net))}</td><td class="num">${esc(usd(stub.ytd.net))}</td></tr>
   </table>
 
-  <footer>Processed by Olympic Payroll for ${esc(employerName)}. Keep this statement for your records.</footer>`;
+  <footer>Keep this statement for your records. Processed by Olympic Payroll for ${esc(employerName)}</footer>`;
 
   return page(`Pay stub, ${stub.payDate}`, STUB_CSS, body, sample);
 }

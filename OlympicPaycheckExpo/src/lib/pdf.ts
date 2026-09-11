@@ -1,7 +1,10 @@
-import { Asset } from 'expo-asset';
 import { Directory, File, Paths } from 'expo-file-system';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+
+import { LOGO_PNG_BASE64 } from '@/lib/logo-data';
+
+import PdfViewer from '../../modules/pdf-viewer';
 
 /**
  * Turning a document into a PDF the employee can keep.
@@ -14,6 +17,14 @@ import * as Sharing from 'expo-sharing';
 
 /** US Letter at 72 points per inch, the size payroll documents print at. */
 const LETTER = { width: 612, height: 792 };
+
+/** No app on the phone can show a PDF. */
+export class NoPdfViewerError extends Error {
+  constructor() {
+    super('No app on this phone can open a PDF');
+    this.name = 'NoPdfViewerError';
+  }
+}
 
 /** A file name that is safe everywhere: letters, digits and hyphens. */
 export function pdfFileName(...parts: (string | number)[]): string {
@@ -54,34 +65,42 @@ export async function sharePdf(file: File, dialogTitle: string): Promise<void> {
  * Write the PDF into a folder the employee picks, usually Downloads.
  *
  * Used on Android, whose share sheet has no dependable "save a copy" target;
- * iOS's always offers Save to Files. Resolves false when the employee closes
- * the picker without choosing a folder.
+ * iOS's always offers Save to Files. Resolves with the saved copy's URI, or
+ * null when the employee closes the picker without choosing a folder.
  */
-export async function savePdfToFolder(file: File, fileName: string): Promise<boolean> {
+export async function savePdfToFolder(file: File, fileName: string): Promise<string | null> {
   let folder: Awaited<ReturnType<typeof Directory.pickDirectoryAsync>>;
   try {
     folder = await Directory.pickDirectoryAsync();
   } catch {
     // The picker reports being dismissed as an error.
-    return false;
+    return null;
   }
-  folder.createFile(fileName, 'application/pdf').write(await file.bytes());
-  return true;
+  const saved = folder.createFile(fileName, 'application/pdf');
+  saved.write(await file.bytes());
+  return saved.uri;
 }
 
 /**
- * The torch logo as a data URI.
+ * Open a saved PDF in whichever app the phone uses for PDFs.
  *
- * The iOS print engine cannot load bundled assets by URL, so images have to
- * travel inside the HTML. A document is still complete without its logo, so
- * any failure here just leaves it out.
+ * Android only, through the app's own module (`modules/pdf-viewer`). It grants
+ * the viewer read access to the saved copy and opens it as an app of its own,
+ * and nothing waits for the viewer to close, so leaving it open never blocks
+ * the next Open. Rejects with NoPdfViewerError when no installed app can show
+ * a PDF.
  */
-export async function logoDataUri(): Promise<string | undefined> {
+export async function openPdf(uri: string): Promise<void> {
+  if (!PdfViewer) throw new Error('Opening a PDF is not available in this build');
   try {
-    const asset = await Asset.fromModule(require('../../assets/images/logo-torch.png')).downloadAsync();
-    if (!asset.localUri) return undefined;
-    return `data:image/png;base64,${await new File(asset.localUri).base64()}`;
-  } catch {
-    return undefined;
+    await PdfViewer.open(uri);
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code === 'ERR_NO_PDF_VIEWER') throw new NoPdfViewerError();
+    throw error;
   }
+}
+
+/** The torch logo as a data URI, ready to place in a document's HTML. */
+export function logoDataUri(): string {
+  return `data:image/png;base64,${LOGO_PNG_BASE64}`;
 }

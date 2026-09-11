@@ -33,12 +33,15 @@ it('runs on fixtures, and says so, when no URL is configured', () => {
 });
 
 /**
- * Setting the URL used to switch the demo banner off and satisfy the release
- * guard while `getApi()` went on returning fixtures, so a build could show
- * invented pay with nothing on screen to say so.
+ * Setting the URL once switched the demo banner off while `getApi()` went on
+ * returning fixtures. Now the URL selects the HTTP adapter itself, so the
+ * banner goes exactly when the invented pay does.
  */
-it('refuses to start when a URL is set but no adapter can use it', () => {
+it('talks to the payroll service, and drops the demo banner, when a URL is set', () => {
   process.env.EXPO_PUBLIC_API_URL = 'https://payroll.example.test';
 
-  expect(loadClient).toThrow(/HTTP payroll adapter has not been implemented/);
+  const client = loadClient();
+
+  expect(client.IS_MOCK_BACKEND).toBe(false);
+  expect(typeof client.getApi().getW2).toBe('function');
 });

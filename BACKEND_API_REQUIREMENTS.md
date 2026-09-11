@@ -341,7 +341,8 @@ them individually, which is a functional regression against the current app.
     Employee Access shows? If so, can the API serve that PDF, alongside the box
     values or instead of them? (§5)
 15. How many years of W-2s are kept, and are corrected forms (W-2c) served the
-    same way?
+    same way? What `form` value do they carry? For now the app lists W-2s only
+    and leaves out anything else (a W-2c, a 1099) rather than failing the list.
 16. Can the W-2 carry a truncated SSN (`XXX-XX-1234`)? The IRS allows this on
     employee copies, and the app must never receive the full number.
 17. Is the employee's consent to receive W-2s electronically already recorded
@@ -367,6 +368,7 @@ message when the real problem is a typo in an email address.
 | SSN doesn't match | Check the digits and try again |
 | Email shared by several employees | Call Olympic Payroll (with the count, if known) |
 | Record not found | We couldn't find that pay stub |
+| Sign-in no longer accepted | Signed out, and sent back to sign in again |
 | Network failure | Check your connection |
 | Server error | Generic apology — no internal detail shown |
 
@@ -380,18 +382,17 @@ return whatever diagnostic detail is useful to us in logs.
 The app picks its backend from configuration, not from an edited source file:
 
 - `EXPO_PUBLIC_API_URL` (or `extra.apiUrl` in `app.json`) names the real
-  payroll service. When it is absent the app runs on fixtures and shows a demo
-  banner. Setting it before the `httpApi` adapter exists stops the app at
-  startup, so a build can never serve fixtures with the banner hidden.
+  payroll service. When it is set, the app talks to that service through the
+  HTTP adapter (`src/api/http.ts`) and the demo banner disappears. When it is
+  absent the app runs on fixtures and shows the banner. The two are never mixed.
 - The `production` EAS profile does not set `EXPO_PUBLIC_API_URL` yet; add it to
   that profile's `env` once the URL is known. Until then, a production build
   **throws at startup** rather than shipping invented payroll to employees.
 - The `preview` profile sets `EXPO_PUBLIC_ALLOW_FIXTURES=1`, so internal demo
   builds keep working on fixtures while this contract is being agreed.
 
-So the single thing needed to switch the app onto the real service is the URL,
-plus the `httpApi` adapter implementing the interface in `src/api/client.ts`,
-returned from `selectApi()`.
+So the single thing needed to switch the app onto the real service is the URL.
+The adapter is already written (§10, §11).
 
 ---
 
@@ -399,16 +400,124 @@ returned from `selectApi()`.
 
 The app is built against a single interface (`PayrollApi`, in
 `OlympicPaycheckExpo/src/api/client.ts`) that every screen depends on. No screen
-knows anything about the transport. Wiring up a real backend is one new adapter
-file plus one changed line — the fixture backend is swapped out and the app is
-live on real data.
+knows anything about the transport.
+
+**The HTTP adapter is already written** (`OlympicPaycheckExpo/src/api/http.ts`),
+against the contract in §11. It already handles sign-in with a bearer token,
+sign-out, request timeouts, the error cases in §8, and checks every response
+before a screen sees it, so a malformed reply becomes a clear error rather than
+a crash. Connecting to the real service means:
+
+1. Set `EXPO_PUBLIC_API_URL`.
+2. Where your API differs from §11, adjust the paths (`ROUTES`) and the field
+   readers in `http.ts`. No screen changes.
+3. Run the contract tests against a test account.
 
 The test suite includes contract tests that run against whatever the adapter
 returns, so the same tests that pass on fixtures today become the acceptance
 tests for your API.
 
-Realistically: a few days from a documented contract to real payroll on screen,
-then verification against real accounts.
+Realistically: a day or two to adapt the adapter to a documented API, then
+verification against real accounts.
+
+---
+
+## 11. The contract the app speaks today
+
+This is a proposal, and the paths are ours. If your API is shaped differently,
+nothing needs to change on your side: the differences are absorbed in one file
+on ours.
+
+**Conventions**
+
+- JSON over HTTPS, under a configurable base URL.
+- `POST /auth/sign-in` returns `{ "token": "…", "employee": {…}, "companies": [ … ] }`
+  (§5). Every later request sends `Authorization: Bearer <token>`. The token is
+  held in memory only, never on the device's disk.
+- A `401` on any request after sign-in ends the session: the app signs the
+  employee out once and returns to the login screen.
+- Errors are any non-2xx status with an optional body
+  `{ "error": { "code": "…", "count": 3 } }`, where `code` is one of
+  `INVALID_EMAIL`, `INVALID_SSN`, `MULTIPLE_EMPLOYEES`, `NOT_FOUND` or
+  `SESSION_EXPIRED`. Without a code, the app goes by the status: `401` while
+  signing in is a wrong SSN, `401` afterwards is an ended session, `404` is not
+  found, anything else is a generic server error.
+- Money may be a JSON number or a decimal string (`"1643.20"`). Ids may be
+  strings or numbers. Yes/no fields may be `true`/`false` or `1`/`0`.
+  Addresses may be a list of lines or one string with a line break per row.
+- Dates are ISO (`2026-07-18`). The display date (`payDate`) is optional on pay
+  periods and stubs alike; without it the app formats the ISO date itself.
+- A request that has not answered in 20 seconds is treated as a connection
+  failure.
+- An SSN in any response is truncated to the last four digits before any screen
+  or PDF can see it, but please don't send one.
+
+**Endpoints**
+
+| Operation | Method and path | Body | Returns |
+|---|---|---|---|
+| `signIn` | `POST /auth/sign-in` | `{ email, ssnLast4 }` or `{ email, ssnFull }` | token, employee and companies (§5) |
+| `signOut` | `POST /auth/sign-out` | none | nothing |
+| `getLatestPaycheck` | `GET /employees/{employeeId}/paychecks/latest` | none | pay period summary |
+| `getPayYears` | `GET /employees/{employeeId}/pay-years` | none | `[2026, 2025, …]` |
+| `getPaychecks` | `GET /employees/{employeeId}/paychecks?year={year}` | none | pay period summaries |
+| `getStub` | `GET /companies/{companyId}/stubs/{paycheckId}` | none | full pay stub |
+| `getChecksForDate` | `GET /employees/{employeeId}/pay-dates/{payDateIso}/checks` | none | pay period summaries |
+| `getCombinedStub` | `GET /employees/{employeeId}/pay-dates/{payDateIso}/combined-stub` | none | full pay stub |
+| `markPaycheckRead` | `POST /deliveries/{sentId}/read` | none | nothing |
+| `emailStub` | `POST /deliveries/{sentId}/email` | none | nothing |
+| `getPhoto` | `GET /employees/{employeeId}/photo` | none | `{ url }`, `{ base64 }` or `null` |
+| `uploadPhoto` | `PUT /employees/{employeeId}/photo` | `{ base64 }` | nothing |
+| `getTaxDocuments` | `GET /employees/{employeeId}/tax-documents` | none | tax documents (§5) |
+| `getW2` | `GET /employees/{employeeId}/tax-documents/{documentId}/w2` | none | one W-2 (§5) |
+
+Credentials only ever travel in a request body, never in the address, because
+addresses end up in server logs.
+
+---
+
+## 12. What the Olympic Payroll web app already does
+
+We read the public code of the myolympicpay.com web app to see how it talks to
+its backend. No requests were made to the API itself. It suggests much of what
+the mobile app needs already exists:
+
+- **The same style of API.** JSON calls under versioned paths (`v0/…`, `v2/…`)
+  on a configurable service URL, authorised with `Authorization: Bearer`
+  tokens from an ASP.NET identity sign-in. The mobile adapter already works
+  this way.
+- **Pay stub PDFs for employees.** `POST v0/misc/getESSEmpCheckReports/{id}`
+  returns a PDF.
+- **W-2 PDFs.** `POST v0/hr/getW2Reports/{id}` returns a PDF, and
+  `GET v0/misc/getW2StatusList` lists W-2 status.
+- **Sign-in through a token endpoint.** The web app gets its bearer token from
+  `POST TokenPKey`, a form-encoded OAuth-style request (`grant_type=password`),
+  and has a matching refresh call. The mobile adapter's sign-in (§11) can be
+  pointed at the same endpoint.
+- **One login, several employers.** `v2/login/getEmployeeAspnetUser` returns
+  the employee records linked to a login, each then loaded with
+  `getEssEmployee`. That is the same shape as the app's employer picker.
+- **Sign-in bookkeeping.** `v2/login/getUserLoginCounter`,
+  `incrementUserLoginCounter` and `resetUserLoginCounter` (a failed-attempt
+  counter), and `v0/account/PutFinalizeEssLoginAccount` (employee self-service
+  accounts).
+- **A configured session timeout.** `v2/session/GetSessionTimeoutConfiguration`.
+- **Profile photos.** `v0/hr/uploadEmployeePhoto`.
+
+What this raises for you:
+
+1. Can the mobile app use the same service URL and the employee self-service
+   sign-in, rather than a separate API?
+2. If the official pay stub and W-2 PDFs can be served to the app, it will show
+   and share those exact documents instead of drawing its own copies.
+3. Should the app respect the same failed-attempt counter as the web sign-in?
+4. The app signs out after 5 idle minutes. Should it follow the timeout the web
+   app is configured with instead, and use the refresh call to keep an active
+   session alive?
+5. When one login covers several employers, does a single token authorise every
+   linked employee record, or does switching employer need a new token or an
+   employer-specific header? The app switches employer without signing in
+   again.
 
 ---
 

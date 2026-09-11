@@ -134,6 +134,12 @@ jest.mock('expo-file-system', () => {
   return { __disk: disk, File, Directory, Paths: { cache: new Directory('file:///cache') } };
 });
 
+// The app's own Android module that opens a saved PDF in the phone's viewer.
+jest.mock('./modules/pdf-viewer', () => ({
+  __esModule: true,
+  default: { open: jest.fn() },
+}));
+
 // --- Per-test isolation -----------------------------------------------------
 const SecureStore = require('expo-secure-store');
 const LocalAuthentication = require('expo-local-authentication');
@@ -181,9 +187,6 @@ beforeEach(() => {
   FileSystem.Directory.pickDirectoryAsync
     .mockReset()
     .mockResolvedValue(new FileSystem.Directory('content://downloads'));
-  // Bundled images can't be downloaded in a test runner, so the logo arrives
-  // as if it were already on disk.
-  jest.spyOn(require('expo-asset').Asset, 'fromModule').mockReturnValue({
-    downloadAsync: async () => ({ localUri: 'file:///cache/logo-torch.png' }),
-  });
+  // A phone with a PDF viewer installed.
+  require('./modules/pdf-viewer').default.open.mockReset().mockResolvedValue(undefined);
 });

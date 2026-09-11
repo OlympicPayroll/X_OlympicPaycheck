@@ -56,8 +56,7 @@
           "cameraPermission": "Allow Olympic Paycheck to use your camera so you can take a profile photo.",
           "photosPermission": "Allow Olympic Paycheck to access your photos so you can choose a profile photo."
         }
-      ],
-      "expo-asset"
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

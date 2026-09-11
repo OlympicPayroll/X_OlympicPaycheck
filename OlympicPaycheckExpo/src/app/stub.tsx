@@ -117,7 +117,7 @@ export default function StubScreen() {
           employeeName: session ? displayName(session.employee.fullName) : '',
           employerName: company?.name ?? '',
           combined: isCombined,
-          logo: await logoDataUri(),
+          logo: logoDataUri(),
           sample: IS_MOCK_BACKEND,
         }),
       fileName: pdfFileName('Pay-Stub', params.date ?? stub.payDate, isCombined ? 'combined' : ''),

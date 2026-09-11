@@ -1,5 +1,6 @@
 import Constants from 'expo-constants';
 
+import { createHttpApi } from '@/api/http';
 import { mockApi } from '@/api/mock';
 import type { Paycheck, Session, StubDetail, TaxDocument, W2 } from '@/api/types';
 
@@ -62,6 +63,12 @@ export interface PayrollApi {
 
   /** One issued W-2, box by box. A pending form is NOT_FOUND. */
   getW2(params: { employeeId: string; documentId: string }): Promise<W2>;
+
+  /**
+   * End the sign-in on the payroll service too. Best effort: signing out on
+   * the phone never waits on this, and it never throws.
+   */
+  signOut(): Promise<void>;
 }
 
 /**
@@ -77,21 +84,12 @@ const API_URL: string | undefined =
   undefined;
 
 /**
- * The adapter for this build, chosen once at startup.
- *
- * A URL with no adapter to use it is a misconfiguration, not a reason to keep
- * serving fixtures quietly: that combination hid the demo banner and got past
- * the release guard below while employees saw invented pay. It fails here
- * instead, until `httpApi` exists.
+ * The adapter for this build, chosen once at startup: the payroll service when
+ * a URL is configured, fixtures otherwise. Never a mix of the two, which is
+ * what keeps the demo banner and the release guard below honest.
  */
 function selectApi(): PayrollApi {
-  if (API_URL) {
-    throw new Error(
-      'EXPO_PUBLIC_API_URL is set, but the HTTP payroll adapter has not been implemented yet. ' +
-        'Remove the URL to run on fixture data, or implement httpApi in src/api/ and return it from selectApi().',
-    );
-  }
-  return mockApi;
+  return API_URL ? createHttpApi({ baseUrl: API_URL }) : mockApi;
 }
 
 const activeApi = selectApi();
@@ -128,10 +126,10 @@ if (IS_MOCK_BACKEND && !FIXTURES_ALLOWED) {
 /**
  * Active backend.
  *
- * TODO(backend): implement `httpApi` against this interface once Olympic
- * Payroll provides the base URL, endpoint contract and auth scheme for the API
- * their current Employee Access app uses, then return it from `selectApi()`
- * when `API_URL` is set.
+ * The HTTP adapter (`http.ts`) speaks the contract proposed in
+ * BACKEND_API_REQUIREMENTS.md §11. Once Olympic Payroll confirms the real
+ * endpoints and auth scheme, any differences are absorbed there; nothing that
+ * calls `getApi()` changes.
  */
 export function getApi(): PayrollApi {
   return activeApi;

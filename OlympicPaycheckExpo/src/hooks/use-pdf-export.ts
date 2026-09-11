@@ -2,7 +2,8 @@ import { useCallback, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 
 import { useDialog } from '@/lib/dialog';
-import { renderPdf, savePdfToFolder, sharePdf } from '@/lib/pdf';
+import { NoPdfViewerError, openPdf, renderPdf, savePdfToFolder, sharePdf } from '@/lib/pdf';
+import { useSnackbar } from '@/lib/snackbar';
 
 type ExportRequest = {
   /** Builds the document. Called only once the employee has chosen where it goes. */
@@ -21,8 +22,35 @@ type ExportRequest = {
  */
 export function usePdfExport() {
   const { confirm, choose } = useDialog();
+  const snackbar = useSnackbar();
   const busyRef = useRef(false);
   const [exporting, setExporting] = useState(false);
+
+  /** Open the copy just saved, so the employee needn't find it in their files. */
+  const openSaved = useCallback(
+    async (uri: string) => {
+      try {
+        await openPdf(uri);
+      } catch (error) {
+        // The file is saved either way. Only blame the phone's apps when that
+        // really is the reason.
+        await confirm({
+          ...(error instanceof NoPdfViewerError
+            ? {
+                title: 'No app to open PDFs',
+                message: 'The PDF is saved in the folder you chose. Install a PDF viewer, such as Google Drive, to open it.',
+              }
+            : {
+                title: 'We couldn’t open the PDF',
+                message: 'It is saved in the folder you chose. You can open it from your Files app.',
+              }),
+          confirmText: 'OK',
+          cancelText: 'Close',
+        });
+      }
+    },
+    [confirm],
+  );
 
   const exportPdf = useCallback(
     async ({ html, fileName, title }: ExportRequest) => {
@@ -46,12 +74,13 @@ export function usePdfExport() {
             await sharePdf(file, title);
             return;
           }
-          if (await savePdfToFolder(file, fileName)) {
-            await confirm({
-              title: 'PDF saved',
-              message: `${fileName} is in the folder you chose.`,
-              confirmText: 'Done',
-              cancelText: 'Close',
+          const saved = await savePdfToFolder(file, fileName);
+          if (saved) {
+            // Done, with the obvious next step one tap away: no dialog to
+            // dismiss, and no trip to the Files app to find what was just saved.
+            snackbar.show({
+              message: 'PDF saved to your phone',
+              action: { label: 'Open', onPress: () => void openSaved(saved) },
             });
           }
         } catch {
@@ -67,7 +96,7 @@ export function usePdfExport() {
         setExporting(false);
       }
     },
-    [choose, confirm],
+    [choose, confirm, snackbar, openSaved],
   );
 
   return { exporting, exportPdf };
