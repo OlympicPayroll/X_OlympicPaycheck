@@ -1,56 +1,50 @@
-# Welcome to your Expo app 👋
+# Olympic Paycheck — mobile app
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+This folder is the React Native (Expo) app. The full project documentation (what the app does, its architecture, the technologies used, the project history and the open items) is in the [repository README](../README.md).
 
-## Get started
+## Requirements
 
-1. Install dependencies
+- Node.js 20 LTS or newer, and npm
+- An Android phone or emulator, or an iPhone
+- For phone builds: an [Expo](https://expo.dev) account with access to the `olympic-paycheck` project
 
-   ```bash
-   npm install
-   ```
+## Common commands
 
-2. Start the app
+Run these from this folder.
 
-   ```bash
-   npx expo start
-   ```
+| Task | Command |
+|---|---|
+| Install dependencies | `npm install` |
+| Start the development server | `npx expo start` |
+| Run the tests | `npm test` |
+| Type-check | `npm run typecheck` |
+| Lint | `npm run lint` |
+| Build an installable Android APK | `npx eas-cli build --platform android --profile preview` |
 
-In the output, you'll find options to open the app in a
+The fingerprint and Face ID prompts, and opening a saved PDF on Android, use native code that Expo Go does not include. Test those on an EAS build.
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## Configuration
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+| Variable | Effect |
+|---|---|
+| `EXPO_PUBLIC_API_URL` | Base URL of the payroll service. When set, the app uses the HTTP adapter (`src/api/http.ts`). When absent, it runs on the built-in sample data and shows a "SAMPLE DATA" banner. |
+| `EXPO_PUBLIC_ALLOW_FIXTURES` | Set to `1` to allow a release build to run on sample data. The `preview` build profile sets it. The `production` profile does not, so a production build without an API URL refuses to start. |
 
-## Get a fresh project
+## Where things are
 
-When you're ready, run:
+| Path | Contents |
+|---|---|
+| `src/app/` | Screens. The file names are the routes (Expo Router). |
+| `src/api/` | The `PayrollApi` interface, the HTTP adapter, the sample-data backend and the data hooks. |
+| `src/lib/` | Sign-in session, biometrics, dialogs, PDF rendering, auto sign-out and other shared logic. |
+| `src/components/` | Shared UI: header, cards, buttons, icons, loading and error states. |
+| `src/constants/theme.ts` | Design tokens: colours for light and dark mode, spacing and type. |
+| `modules/pdf-viewer/` | A small native Android module that opens a saved PDF in the phone's viewer. |
+| `__tests__/` | Jest and React Native Testing Library tests. |
 
-```bash
-npm run reset-project
-```
+## Conventions
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
-
-### Other setup steps
-
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
-
-## Learn more
-
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+- The project is pinned to **Expo SDK 54** (React Native 0.81.5, React 19.1). Add packages with `npx expo install <package>`, so the versions match the SDK. The reference documentation is at <https://docs.expo.dev/versions/v54.0.0/>.
+- Screens never talk to a backend directly. They use the hooks in `src/api/queries.ts`, which call whichever `PayrollApi` implementation is active.
+- After adding a route, delete `.expo/types/router.d.ts` if the type-check reports unknown routes. The development server regenerates it.
+- Babel is configured by Expo automatically. Do not add a `babel.config.js`.
